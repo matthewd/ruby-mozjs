@@ -1,3 +1,7 @@
+2006-10-09
+	* Change : pkg-config を使うように変更( kou )
+	* Fix: rbsm.js を添付し忘れていたので追加
+
 2006-10-03
 	* Change : 内部の日本語をUTF-8に変更 
 	* : Google Code にアップロード 

@@ -287,7 +287,7 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 		def add1(a); a.to_i + 1; end;
 		def add2(*a); @args = a; a.size end;
 	end
-	def test_hoge2
+	def test_property_and_method
 		hoge = Hoge2.new
 		cx = SpiderMonkey::Context.new
 		cx.set_property( "hoge", hoge );

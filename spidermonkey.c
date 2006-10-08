@@ -1,8 +1,16 @@
 #define JS_C_STRINGS_ARE_UTF8
-#include "ruby.h"
-#include "smjs/jsapi.h"
-#include "smjs/jshash.h"
-#include "smjs/jsobj.h"
+
+#include <ruby.h>
+
+#ifdef NEED_SMJS_PREFIX
+#  include <smjs/jsapi.h>
+#  include <smjs/jshash.h>
+#  include <smjs/jsobj.h>
+#else
+#  include <jsapi.h>
+#  include <jshash.h>
+#  include <jsobj.h>
+#endif
 
 extern VALUE ruby_errinfo;
 
@@ -635,17 +643,17 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	char* keyname;
 	sSMJS_Class* so;
 	keyname = JS_GetStringBytes(JSVAL_TO_STRING(argv[0]));
-	printf("_noSuchMethod__( %s )",keyname);
+	//printf("_noSuchMethod__( %s )",keyname);
 	if( !( so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT(argv[-2]), &JSRubyObjectClass, NULL ) ) ){ 
 		JS_ReportErrorNumber(cx, rbsm_GetErrorMessage, NULL, RBSMMSG_NOT_FUNCTION, keyname);
 		return JS_FALSE;
 	}
 	if( strcmp( keyname, g_last0arity.keyname )==0 ){
-	printf("!\n");
+	//printf("!\n");
 		*rval = g_last0arity.val;
 		return JS_TRUE;
 	}
-	printf("!=%s]",g_last0arity.keyname);
+	//printf("!=%s]",g_last0arity.keyname);
 	return JS_FALSE;
 /*
 	// 引数をSpiderMonkey::Valueに 
