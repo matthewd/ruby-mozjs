@@ -17,7 +17,7 @@ def find_smjs
   have_library(lib)
 end
 
-if %w(xulrunner-js thunderbird-js moziila-js).any? do |package|
+if %w(xulrunner-js thunderbird-js mozilla-js).any? do |package|
     PKGConfig.have_package(package)
   end or find_smjs
   create_makefile("spidermonkey")
