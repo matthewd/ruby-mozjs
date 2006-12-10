@@ -241,7 +241,7 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 			cx.eval(" try{ x.func1(); }catch(e){} ")
 		}
 		assert_equal "test", cx.eval(" try{ x.func1(); }catch(e){e.toString()} ")
-		assert_equal TESTException, cx.eval(" y=null; try{ x.func1(); }catch(e){ y=e['class']; } y")
+		assert_equal TESTException, cx.eval(" y=null; try{ x.func1(); }catch(e){ y=e['class'](); } y")
 		
 	end
 
@@ -262,7 +262,7 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 		hoge = Hoge.new
 		cx = SpiderMonkey::Context.new
 		cx.set_property( "hoge", hoge );
-		assert_equal 1, cx.evaluate( %! hoge.para ! ) , "no need arguments method is property"
+		assert_equal 1, cx.evaluate( %! hoge.para() ! ) , "no need arguments method is property"
 		assert_equal 2, cx.evaluate( %! hoge.add1( 1 ) ! );
 		
 		cx.set_property( "Time", Time );
@@ -273,12 +273,12 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 		assert_equal Math::PI ,cx.eval("RubyMath.PI") 
 
 		assert_equal "object", cx.evaluate( %! typeof hoge ! );
-		begin
-			assert_equal 1, cx.eval("hoge.para()")
-			flunk "para is not function"
-		rescue SpiderMonkey::EvalError => e
-			assert_match /TypeError/, e.message
-		end
+		#begin
+		#	assert_equal 1, cx.eval("hoge.para()")
+		#	flunk "para is not function"
+		#rescue SpiderMonkey::EvalError => e
+		#	assert_match /TypeError/, e.message
+		#end
 	end
 	
 	class Hoge2
@@ -291,7 +291,7 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 		hoge = Hoge2.new
 		cx = SpiderMonkey::Context.new
 		cx.set_property( "hoge", hoge );
-		assert_equal 1, cx.eval("hoge.para ")
+		#assert_equal 1, cx.eval("hoge.para ")
 		assert_equal 1, cx.eval("hoge.para();")
 	end
 
@@ -302,7 +302,7 @@ class SpiderMonkeyTest < Test::Unit::TestCase
 		x.name="hoge"
 		assert_equal 'hoge', x.name
 		cx.set_property( "x", x );
-		assert_equal "hoge", cx.eval("x.name")
+		assert_equal "hoge", cx.eval("x.name()")
 		assert_equal 'fuga', cx.eval("x.name='fuga'")
 		assert_equal 'fuga', x.name
 		assert_equal "undefined", cx.evalget("x.name2").typeof

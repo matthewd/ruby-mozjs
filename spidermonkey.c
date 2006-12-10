@@ -631,10 +631,12 @@ rb_smjs_ruby_proc_caller2(VALUE args){
 	return rb_apply(obj, mname, args);
 }
 
+#ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 struct {
 	char* keyname;
 	jsval val;
 }g_last0arity;
+#endif
 
 static JSBool
 rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval){
@@ -648,11 +650,13 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 		JS_ReportErrorNumber(cx, rbsm_GetErrorMessage, NULL, RBSMMSG_NOT_FUNCTION, keyname);
 		return JS_FALSE;
 	}
+#ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 	if( strcmp( keyname, g_last0arity.keyname )==0 ){
 	//printf("!\n");
 		*rval = g_last0arity.val;
 		return JS_TRUE;
 	}
+#endif
 	//printf("!=%s]",g_last0arity.keyname);
 	return JS_FALSE;
 /*
@@ -743,6 +747,7 @@ rbsm_get_ruby_property(JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE 
 		}
 	}else if (rb_funcall( rbobj, rb_intern("respond_to?"), 1, ID2SYM(rid))) {
 		method = rb_funcall( rbobj, rb_intern("method"), 1, ID2SYM(rid) );
+#ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 		// メソッドの引数の数を調べる 
 		iarity = NUM2INT(rb_funcall( method, rb_intern("arity"), 0 ));
 		if( iarity == 0 /*|| iarity==-1*/ ){
@@ -755,6 +760,9 @@ rbsm_get_ruby_property(JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE 
 			// 引数0以上、あるいは可変引数のメソッドはfunctionオブジェクトにして返す 
 			*vp = OBJECT_TO_JSVAL(rbsm_proc_to_function(cx,method));
 		}
+#else
+			*vp = OBJECT_TO_JSVAL(rbsm_proc_to_function(cx,method));
+#endif
 	}
 	return JS_TRUE;
 }
