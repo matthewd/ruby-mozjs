@@ -12,8 +12,6 @@
 #  include <jsobj.h>
 #endif
 
-extern VALUE ruby_errinfo;
-
 // デフォルトのスタックサイズ : Default stack size
 #define JS_STACK_CHUNK_SIZE    8192
 #define JS_RUNTIME_MAXBYITES   0x400000L
@@ -394,7 +392,7 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 
 	se = JS_malloc( cx, sizeof( sSMJS_Error ) );
 	se->status = status;
-	se->errinfo = rb_obj_dup( ruby_errinfo );
+	se->errinfo = rb_obj_dup( rb_gv_get( "$!" ) );
 	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
 	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
 	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
