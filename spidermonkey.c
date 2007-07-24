@@ -307,7 +307,7 @@ rb_smjs_convertvalue( JSContext* cx, jsval value ){
 	case JSTYPE_NUMBER:
 		return rb_smjs_to_num( cx, value );
 	case JSTYPE_FUNCTION:
-		rb_raise ( eJSConvertError, "function no support" ); break;
+		rb_raise ( eJSConvertError, "function no support [%s]", JS_GetStringBytes(JS_ValueToString(cx, value)) ); break;
 	default:
 		rb_raise ( eJSConvertError, "object not supported type" );
 		break;
@@ -1309,6 +1309,17 @@ rbsm_evalerror_error_number( VALUE self ){
 	Data_Get_Struct( erval, sSMJS_Value, sv ); 
 	return INT2NUM( JS_ErrorFromException( sv->cs->cx, sv->value )->errorNumber );
 }
+
+static VALUE
+rbsm_evalerror_js_error( VALUE self ){
+	sSMJS_Value* sv;
+	VALUE erval;
+
+	erval = rb_iv_get( self, "error" );
+	Data_Get_Struct( erval, sSMJS_Value, sv ); 
+	return rb_smjs_convert_prim( sv->cs->cx, sv->value );
+}
+
 // SpiderMonkey::Context -------------------------------------------------------------
 static VALUE
 rb_smjs_context_get_global( VALUE self ){
@@ -1366,6 +1377,7 @@ static void
 rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report ){
 	sSMJS_Context* cs;
 
+	//printf("JSErrorReport; ispending = %d, flags = %d, exception: %d\n", JS_IsExceptionPending(cx), report->flags, JSREPORT_IS_EXCEPTION( report->flags ));
 	if( JSREPORT_IS_EXCEPTION( report->flags ) ){
 		// 例外をContext毎に記録する 
 		// The exception is recorded in our context
@@ -1557,6 +1569,7 @@ void Init_spidermonkey( ){
 	rb_define_method( eJSEvalError, "lineno", rbsm_evalerror_lineno, 0 );
 	rb_define_method( eJSEvalError, "message", rbsm_evalerror_message, 0 );
 	rb_define_method( eJSEvalError, "error_number", rbsm_evalerror_error_number, 0 );
+	rb_define_method( eJSEvalError, "js_error", rbsm_evalerror_js_error, 0 );
 
 	cJSContext = rb_define_class_under( cSMJS, "Context", rb_cObject );
 	rb_define_alloc_func( cJSContext, rb_smjs_context_alloc );
