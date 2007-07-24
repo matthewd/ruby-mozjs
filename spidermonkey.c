@@ -2,7 +2,11 @@
 
 #include <ruby.h>
 
-#ifdef NEED_SMJS_PREFIX
+#if defined NEED_MOZJS_PREFIX
+#  include <mozjs/jsapi.h>
+#  include <mozjs/jshash.h>
+#  include <mozjs/jsobj.h>
+#elif defined NEED_SMJS_PREFIX
 #  include <smjs/jsapi.h>
 #  include <smjs/jshash.h>
 #  include <smjs/jsobj.h>
