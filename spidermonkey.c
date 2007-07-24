@@ -388,6 +388,10 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	sSMJS_Error* se;
 	JSObject* jo;
 
+	VALUE context = RBSMContext_FROM_JsContext( cx );
+	sSMJS_Context* cs;
+	Data_Get_Struct( context, sSMJS_Context, cs );
+
 	se = JS_malloc( cx, sizeof( sSMJS_Error ) );
 	se->status = status;
 	se->errinfo = rb_obj_dup( ruby_errinfo );
@@ -395,6 +399,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
 	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
 	JS_SetPrivate( cx, jo, (void*)se );
+
+	JS_GetPendingException( cx, &cs->last_exception );
 	return JS_FALSE;
 }
 
