@@ -26,6 +26,10 @@ extern VALUE ruby_errinfo;
 #define RBSM_CONVERT_SHALLOW 1
 #define RBSM_CONVERT_DEEP    0
 
+
+
+#define ZERO_ARITY_METHOD_IS_PROPERTY
+
 VALUE eJSError;
 VALUE eJSConvertError;
 VALUE eJSEvalError;
@@ -86,6 +90,7 @@ static JSBool rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, j
 static JSBool rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static void rbsm_class_finalize ( JSContext* cx, JSObject* obj );
+static JSBool rb_smjs_value_object_callback( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval );
 static JSBool rb_smjs_value_function_callback( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval );
 static JSObject* rbsm_proc_to_function( JSContext* cx, VALUE proc );
 static void rbsm_rberror_finalize ( JSContext* cx, JSObject* obj );
@@ -131,7 +136,9 @@ static JSClass JSRubyObjectClass = {
 	/*addp*/JS_PropertyStub,  /*delpr*/JS_PropertyStub,
 	/*getp*/rbsm_class_get_property,   /*setp*/rbsm_class_set_property,
 	JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub, rbsm_class_finalize,
-	JSCLASS_NO_OPTIONAL_MEMBERS
+	/* getObjectOps */NULL, /*checkAccess */NULL, /*call*/rb_smjs_value_object_callback,
+	/* construct*/NULL, /* xdrObject*/NULL, /* hasInstance*/NULL, /* mark*/NULL,
+	/* spare*/0
 };
 
 static JSClass JSRubyFunctionClass = {
@@ -606,6 +613,51 @@ rb_smjs_ruby_proc_caller( VALUE args ){
 	return rb_apply( proc, rb_intern( "call" ), args );
 }
 
+// used by Object#[] below
+static VALUE
+rb_smjs_ruby_box_caller( VALUE args ){
+	VALUE obj;
+	obj = rb_ary_pop( args );
+	return rb_apply( obj, rb_intern( "[]" ), args );
+}
+
+static VALUE
+rb_smjs_ruby_missing_caller( VALUE args ){
+	VALUE obj;
+	obj = rb_ary_pop( args );
+	return rb_apply( obj, rb_intern( "method_missing" ), args );
+}
+
+// Ruby Object#[]
+static JSBool
+rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval ){
+	JSObject* fobj;
+	VALUE rargs, res;
+	uintN i;
+	int status;
+	sSMJS_Class* so;
+	
+	fobj = JSVAL_TO_OBJECT( argv[-2] );
+	so = (sSMJS_Class*)JS_GetPrivate( cx, fobj );
+	
+	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
+	rargs = rb_ary_new2( argc + 1 );
+	for( i = 0 ; i < argc ; i++ )
+		rb_ary_store( rargs, i, rb_smjs_convert_prim( cx, argv[i] ) );
+	rb_ary_store( rargs, i, so->rbobj );
+	
+	// proc を実行 : The Proc to execute
+	res = rb_protect( rb_smjs_ruby_box_caller, rargs, &status );
+	
+	// Ruby関数実行結果、例外が投げられた場合はJS例外にラップして投げる 
+	// Check the Ruby function execution result; if an exception was
+	// thrown, we raise a corresponding error in JavaScript.
+	if( status != 0 )
+		return rb_smjs_raise_js( cx, status );
+	
+	return rb_smjs_ruby_to_js( cx, res, rval );
+}
+
 // Ruby proc/method がJavaScriptから呼ばれた
 // Ruby method called from JavaScript
 static JSBool
@@ -661,12 +713,18 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	char* keyname;
 	sSMJS_Class* so;
 
+	VALUE rargs, res;
+	int status;
+
 	keyname = JS_GetStringBytes( JSVAL_TO_STRING( argv[0] ) );
 	//printf("_noSuchMethod__( %s )", keyname );
 	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
 	if( !so ){
-		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_NOT_FUNCTION, keyname );
-		return JS_FALSE;
+		so = JS_GetInstancePrivate( cx, thisobj, &JSRubyObjectClass, NULL );
+		if( !so ){
+			JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_NOT_FUNCTION, keyname );
+			return JS_FALSE;
+		}
 	}
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 	if( strcmp( keyname, g_last0arity.keyname ) == 0 ){
@@ -676,7 +734,25 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	}
 	//printf("!=%s]", g_last0arity.keyname );
 #endif
-	return JS_FALSE;
+
+	if (argc != 2)
+		return JS_FALSE;
+
+	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
+	rargs = rb_smjs_convertvalue( cx, argv[1] );
+	rb_ary_unshift( rargs, ID2SYM( rb_intern( keyname ) ) );
+	rb_ary_push( rargs, so->rbobj );
+	
+	// proc を実行 : The Proc to execute
+	res = rb_protect( rb_smjs_ruby_missing_caller, rargs, &status );
+	
+	// Ruby関数実行結果、例外が投げられた場合はJS例外にラップして投げる 
+	// Check the Ruby function execution result; if an exception was
+	// thrown, we raise a corresponding error in JavaScript.
+	if( status != 0 )
+		return rb_smjs_raise_js( cx, status );
+	
+	return rb_smjs_ruby_to_js( cx, res, rval );
 }
 
 static JSObjectOps*
@@ -744,12 +820,12 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	//printf( "_get_property_( %s )", keyname );
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
-	if( rb_is_const_id( rid ) ){
-		if( rb_const_defined( rbobj, rid ) ){
-			// 定数はその値を返す 
-			// Constant returns the value
-			return rb_smjs_ruby_to_js( cx, rb_const_get( rbobj, rid ), vp );
-		}
+	if( rb_is_const_id( rid ) && 
+			rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rb_intern( "constants" ) ) ) &&
+			rb_const_defined( rbobj, rid ) ){
+		// 定数はその値を返す 
+		// Constant returns the value
+		return rb_smjs_ruby_to_js( cx, rb_const_get( rbobj, rid ), vp );
 	}else if( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rid ) ) ){
 		method = rb_funcall( rbobj, rb_intern( "method" ), 1, ID2SYM( rid ) );
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
@@ -759,8 +835,9 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		if( iarity == 0 /*|| iarity == -1*/ ){
 			// 引数0のメソッドはプロパティーとして値を取得 
 			// A method with 0 arguments directly returns the value, acting as a property
-			ret = rb_funcall( rbobj, rid, 0 );
-			g_last0arity.keyname = keyname;
+			ret = rb_funcall( method, rb_intern( "call" ), 0 );
+			//ret = rb_funcall( rbobj, rid, 0 );
+			g_last0arity.keyname = keyname == "ID" ? "id" : keyname;
 			g_last0arity.val = rb_smjs_ruby_to_js( cx, ret, vp );
 			return g_last0arity.val;
 		}else{
