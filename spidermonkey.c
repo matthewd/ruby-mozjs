@@ -522,24 +522,44 @@ RBSMContext_TO_JsContext( VALUE context ){
 }
 
 static jsval 
-rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, VALUE code ){
+rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 	char* source;
+	char* filename;
+	int lineno;
 	jsval value;
 	JSBool ok;
+	VALUE code;
+	VALUE file;
+	VALUE line;
+
+	rb_scan_args( argc, argv, "12", &code, &file, &line );
 
 	SafeStringValue( code );
 	source = StringValuePtr( code );
+
+	if (NIL_P(file)) {
+		filename = NULL;
+	} else {
+		SafeStringValue( file );
+		filename = StringValuePtr( file );
+	}
+
+	if (NIL_P(line))
+		lineno = 1;
+	else
+		lineno = NUM2INT( line );
+
 	cs->last_exception = 0;
-	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), NULL, 1, &value );
+	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), filename, lineno, &value );
 	if( !ok ) rb_smjs_raise_ruby( cs->cx );
 	return value;
 }
 
 static jsval 
-rb_smjs_value_evalscript( VALUE self, VALUE code ){
+rb_smjs_value_evalscript( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Value* sv;
 	Data_Get_Struct( self, sSMJS_Value, sv );
-	return rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), code );
+	return rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), argc, argv );
 }
 
 static void
@@ -1015,26 +1035,26 @@ rb_smjs_value_get_context( VALUE self ){
 // code を実行し、SpiderMonkey::Valueオブジェクトを返す 
 // Execute code; a SpiderMonkey::Value is returned.
 static VALUE
-rb_smjs_value_eval( VALUE self, VALUE code ){
+rb_smjs_value_eval( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Value* sv;
 	Data_Get_Struct( self, sSMJS_Value, sv );
-	return rb_smjs_convert_prim( sv->cs->cx, rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), code ) );
+	return rb_smjs_convert_prim( sv->cs->cx, rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), argc, argv ) );
 }
 
 // code を実行し、SpiderMonkey::Valueオブジェクトを返す 
 // Execute code; a SpiderMonkey::Value is returned.
 static VALUE
-rb_smjs_value_evalget( VALUE self, VALUE code ){
-	return rb_smjs_value_new_jsval( rb_smjs_value_get_context( self ), rb_smjs_value_evalscript( self, code ) );
+rb_smjs_value_evalget( int argc, VALUE* argv, VALUE self ){
+	return rb_smjs_value_new_jsval( rb_smjs_value_get_context( self ), rb_smjs_value_evalscript( argc, argv, self ) );
 }
 
 // code を実行し、なるべく近いRuby のオブジェクトを返す 
 // Execute code; where possible, the nearest Ruby object is returned.
 static VALUE
-rb_smjs_value_evaluate( VALUE self, VALUE code ){
+rb_smjs_value_evaluate( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Value* sv;
 	Data_Get_Struct( self, sSMJS_Value, sv );
-	return rb_smjs_convertvalue( sv->cs->cx, rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), code ) );
+	return rb_smjs_convertvalue( sv->cs->cx, rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), argc, argv ) );
 }
 static VALUE
 rb_smjs_value_each( VALUE self ){
@@ -1556,9 +1576,9 @@ void Init_spidermonkey( ){
 
 	cJSValue = rb_define_class_under( cSMJS, "Value", rb_cObject );
 	rb_define_private_method( cJSValue, "initialize", rb_smjs_value_initialize, 0 );
-	rb_define_method( cJSValue, "eval", rb_smjs_value_eval, 1 );
-	rb_define_method( cJSValue, "evalget", rb_smjs_value_evalget, 1 );
-	rb_define_method( cJSValue, "evaluate", rb_smjs_value_evaluate, 1 );
+	rb_define_method( cJSValue, "eval", rb_smjs_value_eval, -1 );
+	rb_define_method( cJSValue, "evalget", rb_smjs_value_evalget, -1 );
+	rb_define_method( cJSValue, "evaluate", rb_smjs_value_evaluate, -1 );
 	rb_define_method( cJSValue, "to_ruby", rb_smjs_value_to_ruby, 0 );
 	rb_define_method( cJSValue, "to_s", rb_smjs_value_to_s, 0 );
 	rb_define_method( cJSValue, "to_a", rb_smjs_value_to_a, 0 );
