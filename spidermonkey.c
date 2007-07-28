@@ -1248,7 +1248,7 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	char* pname;
 	int i;
 #ifdef WIN32
-	jsval* jargv = JS_malloc( sv->cs->cx, sizeof( jsval*) * ( argc - 1 ) );
+	jsval* jargv;
 #else
 	jsval jargv[argc - 1];
 #endif
@@ -1259,6 +1259,9 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	// 引数をJavaScriptの変数に 
 	// Convert the arguments from Ruby to JavaScript values.
 	//jsval* jargv = _alloca( sizeof( jsval*) * ( argc - 1 ) );
+#ifdef WIN32
+	jargv = JS_malloc( sv->cs->cx, sizeof( jsval*) * ( argc - 1 ) );
+#endif
 	for( i = 1 ; i < argc ; i++ ){
 		rb_smjs_ruby_to_js( sv->cs->cx, rargv[i], &jargv[i - 1] );
 	}
@@ -1268,7 +1271,7 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	ok = JS_CallFunctionName( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), pname, argc - 1, jargv, &jval );
 
 #ifdef WIN32
-	JS_free( jargv );
+	JS_free( sv->cs->cx, jargv );
 #endif
 
 	if( !ok ) rb_smjs_raise_ruby( sv->cs->cx );
