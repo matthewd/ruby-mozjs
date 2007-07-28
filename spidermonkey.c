@@ -663,6 +663,13 @@ rb_smjs_ruby_missing_caller( VALUE args ){
 	return rb_apply( obj, rb_intern( "method_missing" ), args );
 }
 
+#ifdef ZERO_ARITY_METHOD_IS_PROPERTY
+struct{
+	char* keyname;
+	jsval val;
+}g_last0arity;
+#endif
+
 // Ruby Object#[]
 static JSBool
 rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval ){
@@ -673,6 +680,16 @@ rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* 
 	sSMJS_Class* so;
 	
 	fobj = JSVAL_TO_OBJECT( argv[-2] );
+
+	// If we are trying to invoke this object as a zero-param method, and
+	// it was just retrieved as a 0-arity "method as property", we
+	// silently return the object itself; the likihood that we actually
+	// meant to invoke :[] with no arguments is very low.
+	if (argc == 0 && OBJECT_TO_JSVAL(fobj) == g_last0arity.val) {
+		*rval = g_last0arity.val;
+		return JS_TRUE;
+	}
+
 	so = (sSMJS_Class*)JS_GetPrivate( cx, fobj );
 	
 	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
@@ -733,13 +750,6 @@ rb_smjs_ruby_proc_caller2( VALUE args ){
 	mname = rb_ary_pop( args );
 	return rb_apply( obj, mname, args );
 }
-
-#ifdef ZERO_ARITY_METHOD_IS_PROPERTY
-struct{
-	char* keyname;
-	jsval val;
-}g_last0arity;
-#endif
 
 static JSBool
 rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval ){
@@ -868,13 +878,15 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		// We check the number of arguments the method takes
 		iarity = NUM2INT( rb_funcall( method, rb_intern( "arity" ), 0 ) );
 		if( iarity == 0 /*|| iarity == -1*/ ){
+			JSBool success;
 			// 引数0のメソッドはプロパティーとして値を取得 
 			// A method with 0 arguments directly returns the value, acting as a property
 			ret = rb_funcall( method, rb_intern( "call" ), 0 );
 			//ret = rb_funcall( rbobj, rid, 0 );
+			success = rb_smjs_ruby_to_js( cx, ret, vp );
 			g_last0arity.keyname = keyname == "ID" ? "id" : keyname;
-			g_last0arity.val = rb_smjs_ruby_to_js( cx, ret, vp );
-			return g_last0arity.val;
+			g_last0arity.val = *vp;
+			return success;
 		}else{
 			// 引数0以上、あるいは可変引数のメソッドはfunctionオブジェクトにして返す 
 			// Methods with more than zero arguments (or a variable number)
