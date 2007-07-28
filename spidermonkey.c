@@ -18,7 +18,13 @@
 
 // デフォルトのスタックサイズ : Default stack size
 #define JS_STACK_CHUNK_SIZE    8192
-#define JS_RUNTIME_MAXBYITES   0x400000L
+// 32 MB -- SETTING THIS TOO LOW RESULTS IN SEGFAULTS!
+// More specifically, having the runtime actually reach its maximum
+// memory allocation appears to cause segfaults (JS_NewObject returns a
+// bad pointer, then JS_DefineFunction segfaults). It is thus quite
+// important to call JS_GC frequently... we call JS_MaybeGC before
+// evaluating a script to reduce the problem.
+#define JS_RUNTIME_MAXBYITES   0x2000000L
 
 #define RBSMJS_DEFAULT_CONTEXT "@@defaultContext"
 #define RBSMJS_VALUES_CONTEXT "@context"
@@ -406,8 +412,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
 	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
 	JS_SetPrivate( cx, jo, (void*)se );
+	cs->last_exception = OBJECT_TO_JSVAL( jo );
 
-	JS_GetPendingException( cx, &cs->last_exception );
 	return JS_FALSE;
 }
 
@@ -423,12 +429,21 @@ rb_smjs_raise_ruby( JSContext* cx ){
 
 	if( !(JS_IsExceptionPending( cx ) && JS_GetPendingException( cx, &jsvalerror ) ) ){
 		sSMJS_Context* cs;
+		char tmpmsg[BUFSIZ];
+
 		Data_Get_Struct( context, sSMJS_Context, cs );
 		jsvalerror = cs->last_exception;
+
 		if( !jsvalerror ){
 			rb_raise( eJSError, "invalid: %s", cs->last_message );
 		}
+
+		cs->last_exception = 0;
+		strncpy( tmpmsg, cs->last_message, BUFSIZ );
+		sprintf( cs->last_message, "Rubified: %s", tmpmsg );
 	}
+
+	JS_ClearPendingException( cx );
 
 	jo = JSVAL_TO_OBJECT( jsvalerror );
 	if( !jo )
@@ -553,7 +568,8 @@ rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 	else
 		lineno = NUM2INT( line );
 
-	cs->last_exception = 0;
+	//cs->last_exception = 0;
+	JS_MaybeGC( cs->cx );
 	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), filename, lineno, &value );
 	if( !ok ) rb_smjs_raise_ruby( cs->cx );
 	return value;
@@ -1279,7 +1295,7 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	}
 
 	// 実行 : Execution
-	sv->cs->last_exception = 0;
+	//sv->cs->last_exception = 0;
 	ok = JS_CallFunctionName( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), pname, argc - 1, jargv, &jval );
 
 #ifdef WIN32
