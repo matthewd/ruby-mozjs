@@ -13,7 +13,7 @@ def find_smjs(mozjs)
     lib = mozjs
   end
 
-  $defs << " -DNEED_SMJS_PREFIX"
+  $defs << " -DNEED_#{mozjs.upcase}_PREFIX"
   have_library(lib)
 end
 
