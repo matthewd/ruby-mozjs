@@ -200,8 +200,8 @@ static VALUE
 rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 	VALUE ary;
 	VALUE r;
-	JSObject* jo = JSVAL_TO_OBJECT( value );
 	if( JSVAL_IS_OBJECT( value ) ){
+		JSObject* jo = JSVAL_TO_OBJECT( value );
 		if( JSVAL_IS_NULL( value ) ) return rb_ary_new( );
 		if( JS_IsArrayObject( cx, jo ) ){
 			jsuint length;
@@ -445,9 +445,13 @@ rb_smjs_raise_ruby( JSContext* cx ){
 
 	JS_ClearPendingException( cx );
 
+	if( !JSVAL_IS_OBJECT( jsvalerror ) )
+		rb_raise( eJSError, "invalid2: jsvalerror is not an object" );
+
 	jo = JSVAL_TO_OBJECT( jsvalerror );
 	if( !jo )
-		rb_raise( eJSError, "invalid2:" );
+		rb_raise( eJSError, "invalid3:" );
+
 	// 元がRuby例外ならそれを継続 
 	// If it was originally a Ruby exception, we continue that.
 	se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
@@ -616,7 +620,7 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
 	for( enm->i = 0; enm->i < enm->ida->length; enm->i++ ){
 		enm->id = enm->ida->vector[enm->i];
 		if( JS_IdToValue( enm->cx, enm->id, &enm->key ) ){
-			//enm->keystr = JS_GetStringBytes( JSVAL_TO_STRING( enm->key ) );
+			//enm->keystr = JS_GetStringBytes( JS_ValueToString( cx, enm->key ) );
 			//if( JS_GetProperty( enm->cx, enm->obj, enm->keystr, &enm->val ) ){
 			if( OBJ_GET_PROPERTY( enm->cx, enm->obj, enm->id, &enm->val ) ){
 				yield( enm );
@@ -777,7 +781,7 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	VALUE rargs, res;
 	int status;
 
-	keyname = JS_GetStringBytes( JSVAL_TO_STRING( argv[0] ) );
+	keyname = JS_GetStringBytes( JS_ValueToString( cx, argv[0] ) );
 	//printf("_noSuchMethod__( %s )", keyname );
 	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
 	if( !so ){
@@ -828,7 +832,7 @@ rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	if( !se ){
 		// TODO: 正しい関数名、オブジェクト名を出す 
 		// TODO: Output the correct object and function names
-		char* keyname = JS_GetStringBytes( JSVAL_TO_STRING( id ) );
+		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
 	}
@@ -876,7 +880,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	VALUE method;
 	int iarity;
 	VALUE ret;
-	keyname = JS_GetStringBytes( JSVAL_TO_STRING( id ) );
+	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 
 	//printf( "_get_property_( %s )", keyname );
 	rid = rb_intern( keyname );
@@ -924,7 +928,7 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	int status;
 	VALUE vals = rb_ary_new2( 3 );
 	
-	pkeyname = JS_GetStringBytes( JSVAL_TO_STRING( id ) );
+	pkeyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 	sprintf( keyname, "%s=", pkeyname );
 	rid = rb_intern( keyname );
 	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
@@ -944,7 +948,7 @@ rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = JS_GetStringBytes( JSVAL_TO_STRING( id ) );
+		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 		// TODO: 正しい関数名、オブジェクト名を出す 
 		// TODO: Output the correct object and function names
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
@@ -957,7 +961,7 @@ static JSBool
 rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = JS_GetStringBytes( JSVAL_TO_STRING( id ) );
+		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 		// TODO: 正しい関数名、オブジェクト名を出す 
 		// TODO: Output the correct object and function names
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
