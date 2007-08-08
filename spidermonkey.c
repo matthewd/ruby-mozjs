@@ -1452,6 +1452,12 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	cs->cx = JS_NewContext( gSMJS_runtime, stacksize );
 	if( !cs->cx )
 		rb_raise( eJSError, "can't create JavaScript context" );
+
+#ifdef JSOPTION_DONT_REPORT_UNCAUGHT
+	if( JS_GetOptions( cs->cx ) & JSOPTION_DONT_REPORT_UNCAUGHT == 0 )
+		JS_ToggleOptions( cs->cx, JSOPTION_DONT_REPORT_UNCAUGHT );
+#endif
+
 	JS_SetContextPrivate( cs->cx, (void*)self );
 	
 	// ガベレージコレクタのためのマーカー・ハッシュ 
