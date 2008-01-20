@@ -131,6 +131,7 @@ static VALUE rb_smjs_convertvalue( JSContext* cx, jsval value );
 static VALUE rb_smjs_convert_prim( JSContext* cx, jsval value );
 static JSBool rbsm_rubystring_to_jsval( JSContext* cx, VALUE rval, jsval* jval );
 static JSBool rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE rbobj );
+static VALUE rbsm_evalerror_new( VALUE context, VALUE erval );
 static VALUE rbsm_evalerror_new_jsval( VALUE context, jsval jsvalerror );
 static VALUE rb_smjs_value_new_jsval( VALUE context, jsval value );
 static VALUE rb_smjs_value_get_prototype( VALUE self );
@@ -953,18 +954,21 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	VALUE method;
 	int iarity;
 	VALUE ret;
+
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+
+	// FIXME: Every rb_funcall() below should be protected.
 
 	trace( "_get_property_( %s )", keyname );
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
-			rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rb_intern( "constants" ) ) ) &&
+			RTEST( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rb_intern( "constants" ) ) ) ) &&
 			rb_const_defined( rbobj, rid ) ){
 		// 定数はその値を返す 
 		// Constant returns the value
 		return rb_smjs_ruby_to_js( cx, rb_const_get( rbobj, rid ), vp );
-	}else if( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rid ) ) ){
+	}else if( RTEST( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rid ) ) ) ){
 		method = rb_funcall( rbobj, rb_intern( "method" ), 1, ID2SYM( rid ) );
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 		// メソッドの引数の数を調べる 
@@ -972,9 +976,12 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		iarity = NUM2INT( rb_funcall( method, rb_intern( "arity" ), 0 ) );
 		if( iarity == 0 /*|| iarity == -1*/ ){
 			JSBool success;
+			int status;
 			// 引数0のメソッドはプロパティーとして値を取得 
 			// A method with 0 arguments directly returns the value, acting as a property
-			ret = rb_funcall( method, rb_intern( "call" ), 0 );
+			ret = rb_protect( rb_smjs_ruby_proc_caller3, method, &status );
+			if( status != 0 )
+				return rb_smjs_raise_js( cx, status );
 			//ret = rb_funcall( rbobj, rid, 0 );
 			success = rb_smjs_ruby_to_js( cx, ret, vp );
 			g_last0arity.keyname = keyname == "ID" ? "id" : keyname;
@@ -1383,6 +1390,8 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	pname = StringValuePtr( rargv[0] );
 	Data_Get_Struct( self, sSMJS_Value, sv );
 
+	JS_MaybeGC( sv->cs->cx );
+
 	// 引数をJavaScriptの変数に 
 	// Convert the arguments from Ruby to JavaScript values.
 	//jsval* jargv = _alloca( sizeof( jsval*) * ( argc - 1 ) );
@@ -1409,14 +1418,19 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 // SpiderMonkey::EvalError ---------------------------------------------------------------------
 
 static VALUE
-rbsm_evalerror_new_jsval( VALUE context, jsval jsvalerror ){
+rbsm_evalerror_new( VALUE context, VALUE erval ){
 	VALUE self;
-	VALUE erval;
 
-	self = rb_funcall( eJSEvalError, rb_intern( "new" ), 1, context );
-	erval = rb_smjs_value_new_jsval( context, jsvalerror );
+	self = rb_funcall( eJSEvalError, rb_intern( "new" ), 1, rb_funcall( erval, rb_intern( "to_s" ), 0 ) );
 	rb_iv_set( self, "error", erval );
 	return self;
+}
+
+static VALUE
+rbsm_evalerror_new_jsval( VALUE context, jsval jsvalerror ){
+	VALUE erval;
+	erval = rb_smjs_value_new_jsval( context, jsvalerror );
+	return rbsm_evalerror_new( context, erval );
 }
 
 static VALUE
