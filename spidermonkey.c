@@ -44,7 +44,7 @@
 # else
 #  define trace(msg) 
 # endif
-#elif DEBUG
+#elif defined DEBUG
 # define trace(format, ...) do { printf(format, ## __VA_ARGS__); printf("\n"); } while (0)
 #else
 # define trace(format, ...) 
