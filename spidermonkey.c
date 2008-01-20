@@ -497,21 +497,62 @@ rb_smjs_raise_ruby( JSContext* cx ){
 // Throw a Ruby exception as a JavaScript exception.
 static JSBool
 rb_smjs_raise_js( JSContext* cx, int status ){
-	sSMJS_Error* se;
 	JSObject* jo;
+	sSMJS_Error* se;
+	sSMJS_Value* sv;
+	jsval stack_string;
+	VALUE rb_g;
+	VALUE rb_e = rb_gv_get( "$!" );
 
 	VALUE context = RBSMContext_FROM_JsContext( cx );
 	sSMJS_Context* cs;
 	Data_Get_Struct( context, sSMJS_Context, cs );
 
+	trace("rb_smjs_raise_js(cx=%x, status=%x)", cx, status);
+
+	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
+	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
+
+	rb_g = rb_iv_get( context, RBSMJS_CONTEXT_GLOBAL );
+	Data_Get_Struct( rb_g, sSMJS_Value, sv );
+
+	if( JS_CallFunctionName( cx, JSVAL_TO_OBJECT( sv->value ), "__getStack__", 0, NULL, &stack_string ) ){
+		VALUE rb_stack = rb_smjs_to_s( cx, stack_string );
+
+		VALUE stack_list = rb_iv_get( rb_e, "@all_stacks" );
+		if( !RTEST( stack_list ) ){
+			stack_list = rb_ary_new();
+			rb_iv_set( rb_e, "@all_stacks", stack_list );
+		}
+
+		JS_SetProperty( cx, jo, "stack", &stack_string );
+
+		{
+			VALUE new_entry = rb_ary_new();
+			rb_ary_push( new_entry, ID2SYM( rb_intern( "js" ) ) );
+			rb_ary_push( new_entry, rb_stack );
+
+			rb_ary_push( stack_list, new_entry );
+		}
+
+		{
+			VALUE new_entry = rb_ary_new();
+			rb_ary_push( new_entry, ID2SYM( rb_intern( "ruby" ) ) );
+			rb_ary_push( new_entry, rb_funcall( Qnil, rb_intern( "caller" ), 0) );
+
+			rb_ary_push( stack_list, new_entry );
+		}
+	} else {
+		trace("Failure calling __getStack__!");
+	}
+
 	se = JS_malloc( cx, sizeof( sSMJS_Error ) );
 	se->status = status;
-	se->errinfo = rb_obj_dup( rb_gv_get( "$!" ) );
-	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
-	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
-	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
+	se->errinfo = rb_obj_dup( rb_e );
 	JS_SetPrivate( cx, jo, (void*)se );
+
 	cs->last_exception = OBJECT_TO_JSVAL( jo );
+	JS_SetPendingException( cx, cs->last_exception );
 
 	return JS_FALSE;
 }
