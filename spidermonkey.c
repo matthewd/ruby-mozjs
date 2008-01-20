@@ -70,6 +70,7 @@ int alloc_count_rb2js;
 // RubyObject/RubyFunction が持つ情報 : Properties
 typedef struct{
 	VALUE rbobj;
+	jsval jsv;
 }sSMJS_Class;
 
 // RubyException エラー : Error
@@ -889,6 +890,7 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
 	trace("rbsm_proc_to_function(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
+	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	return jo;
 }
@@ -1005,6 +1007,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
 	trace("rbsm_ruby_to_jsobject(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
+	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunction( cx, jo, "__noSuchMethod__", rbsm_class_no_such_method, 2, 0 );
 	return jo;
@@ -1021,8 +1024,14 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 		if( so->rbobj ){
 			if( JS_GetContextPrivate( cx ) ){
 				VALUE context = RBSMContext_FROM_JsContext( cx );
-				rb_hash_delete( rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS ), rb_obj_id( so->rbobj ) );
+				VALUE bindings = rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS );
+				if( RTEST( bindings ) ){
+					rb_hash_delete( rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS ), rb_obj_id( so->rbobj ) );
+				}
 			}
+		}
+		if( so->jsv ){
+			JS_RemoveRoot( cx, &(so->jsv) );
 		}
 		free( so );
 	}
@@ -1052,24 +1061,28 @@ rb_smjs_value_initialize( VALUE self, VALUE context ){
 // The actual constructor of SpiderMonkey::Value.
 static VALUE
 rb_smjs_value_new_jsval( VALUE context, jsval value ){
-	VALUE self;
-	sSMJS_Value* sv;
-	// 領域の確保 : "Guarantee of territory?"
-	self = Data_Make_Struct( cJSValue, sSMJS_Value, 0, rb_smjs_value_free, sv );
-	Data_Get_Struct( context, sSMJS_Context, sv->cs );
-	sv->value = value;
-	trace( "value_new(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, value, alloc_count_js2rb, ++alloc_count_js2rb );
+	sSMJS_Context* cs;
+	Data_Get_Struct( context, sSMJS_Context, cs );
 
-	// context をインスタンス変数として持つ 
-	// It has the context as an instance variable.
-	rb_iv_set( self, RBSMJS_VALUES_CONTEXT, context );
-
-	if( rbsm_lookup_jsval_to_rbval( sv->cs, sv->value ) ){
+	if( rbsm_lookup_jsval_to_rbval( cs, value ) ){
 		// 過去に同じ値でRubyオブジェクトを作成していた場合、そのオブジェクトを取り出す 
 		// When a past Ruby object was created at the same value, we
 		// discard our half-constructed object, and use that instead.
-		return rbsm_get_jsval_to_rbval( sv->cs, sv->value );
+		return rbsm_get_jsval_to_rbval( cs, value );
 	}else{
+		sSMJS_Value* sv;
+		VALUE self;
+
+		// 領域の確保 : "Guarantee of territory?"
+		self = Data_Make_Struct( cJSValue, sSMJS_Value, 0, rb_smjs_value_free, sv );
+		sv->cs = cs;
+		sv->value = value;
+		trace( "value_new(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, value, alloc_count_js2rb, ++alloc_count_js2rb );
+
+		// context をインスタンス変数として持つ 
+		// It has the context as an instance variable.
+		rb_iv_set( self, RBSMJS_VALUES_CONTEXT, context );
+
 		// 過去に作成していなかった場合 
 		// If not, we store this object, and then use it.
 		rbsm_set_jsval_to_rbval( sv->cs, self, value );
@@ -1487,7 +1500,7 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	cs->store = JS_NewObject( cs->cx, NULL, 0, 0 );
 	if( !cs->store )
 		rb_raise( eJSError, "fail for create object store" );
-	JS_AddRoot( cs->cx, &(cs->store) );
+	JS_AddNamedRoot( cs->cx, &(cs->store), "rbsm-store" );
 	cs->id2rbval = JS_NewHashTable( 0, jsid2hash, jsidCompare, rbobjCompare, NULL, NULL );
 
 	// グローバルオブジェクト初期化 
