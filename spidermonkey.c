@@ -1296,14 +1296,21 @@ rb_smjs_value_function( int argc, VALUE* argv, VALUE self ){
 	char* cname;
 	JSObject* jo;
 	VALUE proc, name;
+	jsval jname;
 	sSMJS_Value* sv;
 
 	// 引数の解析 : Analyse the given arguments
 	rb_scan_args( argc, argv, "1&", &name, &proc );
+	if( !RTEST( proc ) ) {
+		rb_raise( rb_eArgError, "block required" );
+	}
 	Data_Get_Struct( self, sSMJS_Value, sv );
 	cname = StringValuePtr( name );
 
 	jo = rbsm_proc_to_function( sv->cs->cx, proc );
+	if( rbsm_rubystring_to_jsval( sv->cs->cx, name, &jname ) ){
+		JS_SetProperty( sv->cs->cx, jo, "name", &jname );
+	}
 	JS_DefineProperty( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), cname, OBJECT_TO_JSVAL( jo ), NULL, NULL, JSPROP_PERMANENT | JSPROP_READONLY );
 
 	return proc;
@@ -1534,11 +1541,10 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	}
 	cs->cx = JS_NewContext( gSMJS_runtime, stacksize );
 	if( !cs->cx )
-		rb_raise( eJSError, "can't create JavaScript context" );
+		rb_raise( eJSError, "Failed to create context" );
 
 #ifdef JSOPTION_DONT_REPORT_UNCAUGHT
-	if( JS_GetOptions( cs->cx ) & JSOPTION_DONT_REPORT_UNCAUGHT == 0 )
-		JS_ToggleOptions( cs->cx, JSOPTION_DONT_REPORT_UNCAUGHT );
+	JS_SetOptions( cs->cx, JS_GetOptions( cs->cx ) | JSOPTION_DONT_REPORT_UNCAUGHT );
 #endif
 
 	JS_SetContextPrivate( cs->cx, (void*)self );
@@ -1546,7 +1552,7 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	// ガベレージコレクタのためのマーカー・ハッシュ 
 	cs->store = JS_NewObject( cs->cx, NULL, 0, 0 );
 	if( !cs->store )
-		rb_raise( eJSError, "fail for create object store" );
+		rb_raise( eJSError, "Failed to create object store" );
 	JS_AddNamedRoot( cs->cx, &(cs->store), "rbsm-store" );
 	cs->id2rbval = JS_NewHashTable( 0, jsid2hash, jsidCompare, rbobjCompare, NULL, NULL );
 
