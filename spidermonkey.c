@@ -138,6 +138,7 @@ static VALUE rb_smjs_value_get_prototype( VALUE self );
 static void* rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data );
 static JSObjectOps* rbsm_class_get_object_ops( JSContext* cx, JSClass* clasp );
 static void rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report );
+static VALUE rb_smjs_context_flush( VALUE self );
 
 typedef enum RBSMErrNum{
 #define MSG_DEF( name, number, count, exception, format ) \
@@ -709,6 +710,11 @@ rb_smjs_ruby_proc_caller( VALUE args ){
 	VALUE proc;
 	proc = rb_ary_pop( args );
 	return rb_apply( proc, rb_intern( "call" ), args );
+}
+
+static VALUE
+rb_smjs_ruby_proc_caller3( VALUE proc ){
+	return rb_funcall( proc, rb_intern( "call" ), 0 );
 }
 
 static VALUE
@@ -1485,22 +1491,37 @@ rb_smjs_context_get_scope_chain( VALUE self ){
 	return rb_smjs_convert_prim( cx, OBJECT_TO_JSVAL( jo ) );
 }
 
+static void
+rbsm_destroy_context( sSMJS_Context* cs ){
+	if ( !cs || !cs->cx )
+		return;
+
+	trace( "Destroy: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
+
+	JS_GC( cs->cx );
+
+	trace( "DESTROY: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
+
+	//JSコンテキストの破棄 
+	// Destruction of the JavaScript context
+	JS_SetContextPrivate( cs->cx, 0 );
+	JS_RemoveRoot( cs->cx, cs->store );
+	cs->store = NULL;
+
+	JS_HashTableDestroy( cs->id2rbval );
+	JS_DestroyContext( cs->cx ); 
+	cs->cx = NULL;
+}
+
 // Contextインスタンスに関連づけたメモリを解放する 
 // Free the memory allocated to this context instance.
 static void
 rb_smjs_context_free( sSMJS_Context* cs ){
 	trace( "context_free" );
-	if( cs->cx ){
-		//JSコンテキストの破棄 
-		// Destruction of the JavaScript context
-		JS_SetContextPrivate( cs->cx, 0 );
-		JS_RemoveRoot( cs->cx, &(cs->store) );
-		cs->store = NULL;
-		JS_HashTableDestroy( cs->id2rbval );
-		JS_DestroyContext( cs->cx ); 
-		//構造体のメモリを解放 
-		// Release the structure's memory
-	}
+	rbsm_destroy_context( cs );
+
+	//構造体のメモリを解放 
+	// Release the structure's memory
 	free( cs );
 }
 
@@ -1542,8 +1563,6 @@ rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* 
 static VALUE
 rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Context* cs;
-	JSObject* jsGlobal;
-	VALUE rbGlobal;
 	int stacksize;
 	Data_Get_Struct( self, sSMJS_Context, cs );
 
@@ -1573,22 +1592,40 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 		rb_raise( eJSError, "Failed to create object store" );
 	JS_AddNamedRoot( cs->cx, &(cs->store), "rbsm-store" );
 	cs->id2rbval = JS_NewHashTable( 0, jsid2hash, jsidCompare, rbobjCompare, NULL, NULL );
-
-	// グローバルオブジェクト初期化 
-	// Initialize the global JavaScript object
-	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
-	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
-		rb_raise( eJSError, "Failed to initialize global object" );
-	// @global に初期化したグローバルオブジェクトをセット 
-	// Set the @global instance variable to hold the global object
-	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
-	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
+	trace( "CREATED: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
 
 	rb_iv_set( self, RBSMJS_CONTEXT_BINDINGS, rb_hash_new( ) );
 
 	// エラーレポーター登録 
 	// Register the error report handler
 	JS_SetErrorReporter( cs->cx, rb_smjs_context_errorhandle );
+
+	rb_smjs_context_flush( self );
+	
+	return Qnil;
+}
+
+static VALUE
+rb_smjs_context_flush( VALUE self ){
+	sSMJS_Context* cs;
+	JSObject* jsGlobal;
+	VALUE rbGlobal;
+	char* str_getStack = "try { null.foo(); } catch(ex) { return ex.stack; }";
+	Data_Get_Struct( self, sSMJS_Context, cs );
+
+	// グローバルオブジェクト初期化 
+	// Initialize the global JavaScript object
+	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
+	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
+		rb_raise( eJSError, "Failed to initialize global object" );
+	
+	JS_CompileFunction( cs->cx, jsGlobal, "__getStack__", 0, NULL, str_getStack, strlen( str_getStack ), "spidermonkey.c:str_getStack", 1 );
+	// @global に初期化したグローバルオブジェクトをセット 
+	// Set the @global instance variable to hold the global object
+	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
+	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
+
+	JS_GC( cs->cx );
 	
 	return Qnil;
 }
@@ -1598,6 +1635,14 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 static VALUE
 rb_smjs_context_get_version( VALUE self ){
 	return rb_str_new2( JS_VersionToString( JS_GetVersion( RBSMContext_TO_JsContext( self ) ) ) );
+}
+
+static VALUE
+rb_smjs_context_shutdown( VALUE self ){
+	sSMJS_Context* cs;
+	Data_Get_Struct( self, sSMJS_Context, cs );
+	rbsm_destroy_context( cs );
+	return Qnil;
 }
 
 // バージョン文字列の設定 
@@ -1728,6 +1773,8 @@ void Init_spidermonkey( ){
 	rb_define_private_method( cJSContext, "initialize", rb_smjs_context_initialize, -1 );
 	rb_define_method( cJSContext, "method_missing", rb_smjs_context_delegate_global, -1 );
 	rb_define_method( cJSContext, "running?", rb_smjs_context_is_running, 0 );
+	rb_define_method( cJSContext, "shutdown", rb_smjs_context_shutdown, 0 );
+	rb_define_method( cJSContext, "flush", rb_smjs_context_flush, 0 );
 	rb_define_method( cJSContext, "version", rb_smjs_context_get_version, 0 );
 	rb_define_method( cJSContext, "version=", rb_smjs_context_set_version, 1 );
 	rb_define_method( cJSContext, "global", rb_smjs_context_get_global, 0 );
