@@ -17,14 +17,15 @@
 #endif
 
 // デフォルトのスタックサイズ : Default stack size
-#define JS_STACK_CHUNK_SIZE    8192
-// 32 MB -- SETTING THIS TOO LOW RESULTS IN SEGFAULTS!
+#define JS_STACK_CHUNK_SIZE    16384
+
+// SETTING THIS TOO LOW RESULTS IN SEGFAULTS!
 // More specifically, having the runtime actually reach its maximum
 // memory allocation appears to cause segfaults (JS_NewObject returns a
 // bad pointer, then JS_DefineFunction segfaults). It is thus quite
 // important to call JS_GC frequently... we call JS_MaybeGC before
 // evaluating a script to reduce the problem.
-#define JS_RUNTIME_MAXBYITES   0x2000000L
+#define JS_RUNTIME_MAXBYTES   0x3000000L
 
 #define RBSMJS_DEFAULT_CONTEXT "@@defaultContext"
 #define RBSMJS_VALUES_CONTEXT "@context"
@@ -483,6 +484,7 @@ rbsm_rubyexception_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* a
 	se = JS_GetInstancePrivate( cx, obj, &JSRubyExceptionClass, NULL );
 	if( !se ){ 
 		// TODO: 正しい関数名、オブジェクト名を出す 
+		// TODO: Output the correct object and function names
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyException", "toString", "Object" );
 		return JS_FALSE;
 	}
@@ -589,7 +591,7 @@ rb_smjs_value_evalscript( int argc, VALUE* argv, VALUE self ){
 static void
 rbsm_each_raise( sSMJS_Enumdata* enm, const char* msg ){
 	JS_DestroyIdArray( enm->cx, enm->ida );
-	rb_raise( eJSConvertError, msg );
+	rb_raise( eJSConvertError, "%s", msg );
 }
 
 static void*
@@ -773,8 +775,6 @@ rb_smjs_ruby_proc_caller2( VALUE args ){
 
 static JSBool
 rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval ){
-	//VALUE vals, res;
-	//int status;
 	char* keyname;
 	sSMJS_Class* so;
 
@@ -1594,7 +1594,7 @@ smjs_runtime_release( ){
 
 static void 
 smjs_runtime_init( ){
-	gSMJS_runtime = JS_NewRuntime( JS_RUNTIME_MAXBYITES );
+	gSMJS_runtime = JS_NewRuntime( JS_RUNTIME_MAXBYTES );
 	if( !gSMJS_runtime )
 		rb_raise( eJSError, "can't create JavaScript runtime" );
 	atexit( (void (*)(void))smjs_runtime_release );
