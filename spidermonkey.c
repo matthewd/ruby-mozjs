@@ -125,6 +125,8 @@ static JSObject* rbsm_proc_to_function( JSContext* cx, VALUE proc );
 static void rbsm_rberror_finalize ( JSContext* cx, JSObject* obj );
 static JSObject* rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj );
 static JSBool rbsm_rubyexception_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval );
+static JSBool rbsm_class_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval );
+static JSBool rbsm_class_no_such_method( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval );
 static VALUE rb_smjs_convertvalue( JSContext* cx, jsval value );
 static VALUE rb_smjs_convert_prim( JSContext* cx, jsval value );
 static JSBool rbsm_rubystring_to_jsval( JSContext* cx, VALUE rval, jsval* jval );
@@ -152,8 +154,12 @@ JSErrorFormatString rbsm_ErrorFormatString[RBSMErr_Limit] = {
 	{0, 0}
 };
 
+#ifndef JSCLASS_GLOBAL_FLAGS
+#define JSCLASS_GLOBAL_FLAGS 0
+#endif
+
 static JSClass global_class = {
-	"global", JSCLASS_NEW_RESOLVE,
+	"global", JSCLASS_NEW_RESOLVE | JSCLASS_GLOBAL_FLAGS,
 	JS_PropertyStub,  JS_PropertyStub,
 	JS_PropertyStub,  JS_PropertyStub,
 	JS_EnumerateStub, JS_ResolveStub,
@@ -179,6 +185,11 @@ static JSClass JSRubyFunctionClass = {
 	/* getObjectOps */rbsm_class_get_object_ops, /*checkAccess */NULL, /*call*/rb_smjs_value_function_callback,
 	/* construct*/NULL, /* xdrObject*/NULL, /* hasInstance*/NULL, /* mark*/NULL,
 	/* spare*/0
+};
+static JSFunctionSpec JSRubyObjectFunctions[] = {
+	{"__noSuchMethod__", rbsm_class_no_such_method, 2},
+	{"toString", rbsm_class_to_string, 0},
+	{0}
 };
 static JSFunctionSpec JSRubyExceptionFunctions[] = {
 	{"toString", rbsm_rubyexception_to_string, 0},
@@ -690,6 +701,11 @@ rb_smjs_ruby_proc_caller( VALUE args ){
 	return rb_apply( proc, rb_intern( "call" ), args );
 }
 
+static VALUE
+rb_smjs_ruby_string_caller( VALUE obj ){
+	return rb_funcall( obj, rb_intern( "to_s" ), 0 );
+}
+
 // used by Object#[] below
 static VALUE
 rb_smjs_ruby_box_caller( VALUE args ){
@@ -839,6 +855,32 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	
 	return rb_smjs_ruby_to_js( cx, res, rval );
 }
+
+static JSBool 
+rbsm_class_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval ){
+	sSMJS_Class* so;
+	VALUE res;
+	int status;
+
+	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
+	if( !so ){
+		so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
+		if( !so ){
+			JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", "toString", "Object" );
+			return JS_FALSE;
+		}
+	}
+
+	res = rb_protect( rb_smjs_ruby_string_caller, so->rbobj, &status );
+	
+	// Check the Ruby function execution result; if an exception was
+	// thrown, we raise a corresponding error in JavaScript.
+	if( status != 0 )
+		return rb_smjs_raise_js( cx, status );
+	
+	return rb_smjs_ruby_to_js( cx, res, rval );
+}
+
 
 static JSObjectOps*
 rbsm_class_get_object_ops( JSContext* cx, JSClass* clasp ){
@@ -1009,7 +1051,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	trace("rbsm_ruby_to_jsobject(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
-	JS_DefineFunction( cx, jo, "__noSuchMethod__", rbsm_class_no_such_method, 2, 0 );
+	JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
 	return jo;
 }
 
