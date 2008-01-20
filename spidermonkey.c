@@ -284,7 +284,7 @@ rb_smjs_to_h( JSContext* cx, jsval value, int shallow ){
 	sRBSM_toHash edat;
 	VALUE ret = rb_hash_new( );
 	if( !JSVAL_IS_OBJECT( value )  ){
-		rb_raise( eJSConvertError, "can't convert to hash from no object" );
+		rb_raise( eJSConvertError, "Value is not an object" );
 	}else{
 		if( JSVAL_IS_NULL( value ) ){
 			return ret;
@@ -302,7 +302,7 @@ rb_smjs_to_i( JSContext* cx, jsval value ){
 	if( JS_ValueToInt32( cx, value, &ip ) ){
 		return INT2NUM( ip );
 	}else{
-		rb_raise( eJSConvertError, "can't convert object to i" );
+		rb_raise( eJSConvertError, "Failed to convert value to integer" );
 	}
 }
 
@@ -312,7 +312,7 @@ rb_smjs_to_f( JSContext* cx, jsval value ){
 	if( JS_ValueToNumber( cx, value, &d ) ){
 		return rb_float_new( d );
 	}else{
-		rb_raise( eJSConvertError, "can't convert object to float" );
+		rb_raise( eJSConvertError, "Failed to convert value to float" );
 	}
 }
 
@@ -323,7 +323,7 @@ rb_smjs_to_num( JSContext* cx, jsval value ){
 	}else if( JSVAL_IS_DOUBLE( value ) ){
 		return rb_smjs_to_f( cx, value );
 	}else{
-		rb_raise( eJSConvertError, "can't convert to num" );
+		rb_raise( eJSConvertError, "Value is not a number" );
 	}
 }
 
@@ -349,9 +349,10 @@ rb_smjs_convertvalue( JSContext* cx, jsval value ){
 	case JSTYPE_NUMBER:
 		return rb_smjs_to_num( cx, value );
 	case JSTYPE_FUNCTION:
-		rb_raise ( eJSConvertError, "function no support [%s]", JS_GetStringBytes(JS_ValueToString(cx, value)) ); break;
+		//rb_raise ( eJSConvertError, "function no support [%s]", JS_GetStringBytes(JS_ValueToString(cx, value)) ); break;
+		rb_raise ( eJSConvertError, "Unsupported: cannot convert JavaScript function to Ruby" ); break;
 	default:
-		rb_raise ( eJSConvertError, "object not supported type" );
+		rb_raise ( eJSConvertError, "Unsupported object type" );
 		break;
 	}
 }
@@ -388,7 +389,6 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	case T_NIL:   *jval = JSVAL_NULL; break;
 	default:
 		*jval = OBJECT_TO_JSVAL( rbsm_ruby_to_jsobject( cx, rval ) );
-		//rb_raise( rb_eTypeError, "cant convert type" );
 	}
 	return JS_TRUE;
 }
@@ -467,22 +467,26 @@ rb_smjs_raise_ruby( JSContext* cx ){
 		jsvalerror = cs->last_exception;
 
 		if( !jsvalerror ){
-			rb_raise( eJSError, "invalid: %s", cs->last_message );
+			rb_raise( eJSError, "No exception for error: %s", cs->last_message );
 		}
 
 		cs->last_exception = 0;
 		strncpy( tmpmsg, cs->last_message, BUFSIZ );
-		sprintf( cs->last_message, "Rubified: %s", tmpmsg );
+		sprintf( cs->last_message, "Exception already passed to Ruby: %s", tmpmsg );
 	}
 
 	JS_ClearPendingException( cx );
 
-	if( !JSVAL_IS_OBJECT( jsvalerror ) )
-		rb_raise( eJSError, "invalid2: jsvalerror is not an object" );
+	if ( !JSVAL_IS_OBJECT( jsvalerror ) ) {
+		rb_raise( eJSEvalError, "%s", JS_GetStringBytes( JS_ValueToString( cx, jsvalerror ) ) );
+	}
+	if ( JSVAL_IS_NULL( jsvalerror ) ) {
+		rb_raise( eJSEvalError, "null" );
+	}
 
 	jo = JSVAL_TO_OBJECT( jsvalerror );
 	if( !jo )
-		rb_raise( eJSError, "invalid3:" );
+		rb_raise( eJSError, "Unable to extract JSObject from exception" );
 
 	// 元がRuby例外ならそれを継続 
 	// If it was originally a Ruby exception, we continue that.
@@ -492,6 +496,7 @@ rb_smjs_raise_ruby( JSContext* cx ){
 		se->status = 0;
 		rb_jump_tag( st );
 	}
+
 	// 元がJS例外なら EvalError を作成してRubyに投げる 
 	// If the exception originated with JavaScript, we build and throw an
 	// EvalError to Ruby.
@@ -647,7 +652,7 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
 		enm->ida = JS_Enumerate( enm->cx, enm->obj );
 	}
 	if( !enm->ida ){
-		rb_raise( eJSConvertError, "can't enumerate" );
+		rb_raise( eJSConvertError, "Unable to enumerate" );
 	}
 
 	for( enm->i = 0; enm->i < enm->ida->length; enm->i++ ){
@@ -658,10 +663,10 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
 			if( OBJ_GET_PROPERTY( enm->cx, enm->obj, enm->id, &enm->val ) ){
 				yield( enm );
 			}else{
-				rbsm_each_raise( enm, "can't get property" );
+				rbsm_each_raise( enm, "Unable to get property" );
 			}
 		}else{
-			rbsm_each_raise( enm, "can't get key name" );
+			rbsm_each_raise( enm, "Unable to get key name" );
 		}
 	}
 
@@ -1549,7 +1554,7 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	// Initialize the global JavaScript object
 	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
 	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
-		rb_raise( eJSError, "can't initialize JavaScript global object" );
+		rb_raise( eJSError, "Failed to initialize global object" );
 	// @global に初期化したグローバルオブジェクトをセット 
 	// Set the @global instance variable to hold the global object
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
@@ -1579,7 +1584,7 @@ rb_smjs_context_set_version( VALUE self, VALUE sver ){
 	
 	v = JS_StringToVersion( StringValuePtr( sver ) );
 	if( v == JSVERSION_UNKNOWN )
-		rb_raise( eJSError, "unknown version" );
+		rb_raise( eJSError, "Unknown version" );
 	JS_SetVersion( RBSMContext_TO_JsContext( self ), v );
 	return self;
 }
@@ -1674,7 +1679,7 @@ static void
 smjs_runtime_init( ){
 	gSMJS_runtime = JS_NewRuntime( JS_RUNTIME_MAXBYTES );
 	if( !gSMJS_runtime )
-		rb_raise( eJSError, "can't create JavaScript runtime" );
+		rb_raise( eJSError, "Failed to create runtime" );
 	atexit( (void (*)(void))smjs_runtime_release );
 }
 
