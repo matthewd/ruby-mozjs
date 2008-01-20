@@ -432,27 +432,9 @@ RBSMContext_FROM_JsContext( JSContext* cx ){
 	return (VALUE)JS_GetContextPrivate( cx );
 }
 
-// Ruby例外をJS例外として投げる 
-// Throw a Ruby exception as a JavaScript exception.
-static JSBool
-rb_smjs_raise_js( JSContext* cx, int status ){
-	sSMJS_Error* se;
-	JSObject* jo;
-
-	VALUE context = RBSMContext_FROM_JsContext( cx );
-	sSMJS_Context* cs;
-	Data_Get_Struct( context, sSMJS_Context, cs );
-
-	se = JS_malloc( cx, sizeof( sSMJS_Error ) );
-	se->status = status;
-	se->errinfo = rb_obj_dup( rb_gv_get( "$!" ) );
-	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
-	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
-	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
-	JS_SetPrivate( cx, jo, (void*)se );
-	cs->last_exception = OBJECT_TO_JSVAL( jo );
-
-	return JS_FALSE;
+static VALUE
+rb_smjs_context_get_global( VALUE self ){
+	return rb_iv_get( self, RBSMJS_CONTEXT_GLOBAL );
 }
 
 // JS例外をRuby例外として投げる 
@@ -509,6 +491,29 @@ rb_smjs_raise_ruby( JSContext* cx ){
 	self = rbsm_evalerror_new_jsval( context, jsvalerror );
 	
 	rb_exc_raise( self );
+}
+
+// Ruby例外をJS例外として投げる 
+// Throw a Ruby exception as a JavaScript exception.
+static JSBool
+rb_smjs_raise_js( JSContext* cx, int status ){
+	sSMJS_Error* se;
+	JSObject* jo;
+
+	VALUE context = RBSMContext_FROM_JsContext( cx );
+	sSMJS_Context* cs;
+	Data_Get_Struct( context, sSMJS_Context, cs );
+
+	se = JS_malloc( cx, sizeof( sSMJS_Error ) );
+	se->status = status;
+	se->errinfo = rb_obj_dup( rb_gv_get( "$!" ) );
+	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
+	JS_SetPendingException( cx, OBJECT_TO_JSVAL( jo ) );
+	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
+	JS_SetPrivate( cx, jo, (void*)se );
+	cs->last_exception = OBJECT_TO_JSVAL( jo );
+
+	return JS_FALSE;
 }
 
 static const JSErrorFormatString*
@@ -1475,11 +1480,6 @@ rbsm_evalerror_js_error( VALUE self ){
 }
 
 // SpiderMonkey::Context -------------------------------------------------------------
-static VALUE
-rb_smjs_context_get_global( VALUE self ){
-	return rb_iv_get( self, RBSMJS_CONTEXT_GLOBAL );
-}
-
 static VALUE
 rb_smjs_context_get_scope_chain( VALUE self ){
 	JSContext* cx;
