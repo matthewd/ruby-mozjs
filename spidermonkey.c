@@ -53,6 +53,8 @@
 
 #define ZERO_ARITY_METHOD_IS_PROPERTY
 
+VALUE rb_cDate;
+
 VALUE eJSError;
 VALUE eJSConvertError;
 VALUE eJSEvalError;
@@ -1094,6 +1096,18 @@ rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	return rbsm_set_ruby_property( cx, obj, id, vp, so->rbobj );
 }
 
+
+static JSObject*
+rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
+	JSObject* jsGlobal = JS_GetGlobalObject( cx );
+	jsval msec_js, dateval;
+
+	rb_smjs_ruby_to_js( cx, msec, &msec_js );
+
+	JS_CallFunctionName( cx, jsGlobal, "__newDate__", 1, &msec_js, &dateval );
+	return JSVAL_TO_OBJECT( dateval );
+}
+
 // rubyobj obj を javascript で使えるようにラップする 
 // To access a Ruby object from JavaScript, we wrap it.
 static JSObject*
@@ -1105,6 +1119,16 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	if( rb_obj_is_kind_of( obj, cJSValue ) ){
 		Data_Get_Struct( obj, sSMJS_Value, sv );
 		return JSVAL_TO_OBJECT( sv->value );
+	}
+	if( rb_obj_is_kind_of( obj, rb_cTime ) ){
+		trace("creating Time");
+		VALUE msec = rb_funcall( obj, rb_intern( "to_i" ), 0 );
+		return rbsm_ruby_to_jsdate( cx, msec );
+	}
+	if( rb_obj_is_kind_of( obj, rb_cDate ) ){
+		trace("creating Date");
+		VALUE msec = rb_funcall( rb_funcall( obj, rb_intern( "strftime" ), 1, rb_str_new2( "%s" ) ), rb_intern( "to_i" ), 0);
+		return rbsm_ruby_to_jsdate( cx, msec );
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
@@ -1644,6 +1668,7 @@ rb_smjs_context_flush( VALUE self ){
 	JSObject* jsGlobal;
 	VALUE rbGlobal;
 	char* str_getStack = "try { null.foo(); } catch(ex) { return ex.stack; }";
+	char* str_newDate = "return new Date(arguments[0] * 1000);";
 	Data_Get_Struct( self, sSMJS_Context, cs );
 
 	// グローバルオブジェクト初期化 
@@ -1653,6 +1678,7 @@ rb_smjs_context_flush( VALUE self ){
 		rb_raise( eJSError, "Failed to initialize global object" );
 	
 	JS_CompileFunction( cs->cx, jsGlobal, "__getStack__", 0, NULL, str_getStack, strlen( str_getStack ), "spidermonkey.c:str_getStack", 1 );
+	JS_CompileFunction( cs->cx, jsGlobal, "__newDate__", 0, NULL, str_newDate, strlen( str_newDate ), "spidermonkey.c:str_newDate", 1 );
 	// @global に初期化したグローバルオブジェクトをセット 
 	// Set the @global instance variable to hold the global object
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
@@ -1786,6 +1812,8 @@ smjs_runtime_init( ){
 }
 
 void Init_spidermonkey( ){
+	rb_cDate = rb_const_get( rb_cObject, rb_intern( "Date" ) );
+
 	smjs_runtime_init( );
 	memcpy( &rbsm_FunctionOps, &js_ObjectOps, sizeof( JSObjectOps ) );
 	cSMJS = rb_define_class( "SpiderMonkey", rb_cObject );
