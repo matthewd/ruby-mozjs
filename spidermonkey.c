@@ -465,24 +465,16 @@ rb_smjs_raise_ruby( JSContext* cx ){
 
 	JS_ClearPendingException( cx );
 
-	if ( !JSVAL_IS_OBJECT( jsvalerror ) ) {
-		rb_raise( eJSEvalError, "%s", JS_GetStringBytes( JS_ValueToString( cx, jsvalerror ) ) );
-	}
-	if ( JSVAL_IS_NULL( jsvalerror ) ) {
-		rb_raise( eJSEvalError, "null" );
-	}
-
-	jo = JSVAL_TO_OBJECT( jsvalerror );
-	if( !jo )
-		rb_raise( eJSError, "Unable to extract JSObject from exception" );
-
-	// 元がRuby例外ならそれを継続 
-	// If it was originally a Ruby exception, we continue that.
-	se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
-	if( se ){
-		int st = se->status;
-		se->status = 0;
-		rb_jump_tag( st );
+	if( JSVAL_IS_OBJECT( jsvalerror ) &&
+		( jo = JSVAL_TO_OBJECT( jsvalerror ) ) ) {
+		// 元がRuby例外ならそれを継続 
+		// If it was originally a Ruby exception, we continue that.
+		se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
+		if( se ){
+			int st = se->status;
+			se->status = 0;
+			rb_jump_tag( st );
+		}
 	}
 
 	// 元がJS例外なら EvalError を作成してRubyに投げる 
