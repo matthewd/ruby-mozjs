@@ -2,6 +2,8 @@
 
 #include <ruby.h>
 
+//#define DEBUG
+
 #if defined NEED_MOZJS_PREFIX
 #  include <mozjs/jsapi.h>
 #  include <mozjs/jshash.h>
@@ -36,6 +38,18 @@
 #define RBSM_CONVERT_DEEP    0
 
 
+#ifdef WIN32
+# ifdef DEBUG
+#  define trace printf("\n"); printf
+# else
+#  define trace(msg) 
+# endif
+#elif DEBUG
+# define trace(format, ...) do { printf(format, ## __VA_ARGS__); printf("\n"); } while (0)
+#else
+# define trace(format, ...) 
+#endif
+
 
 #define ZERO_ARITY_METHOD_IS_PROPERTY
 
@@ -47,6 +61,11 @@ VALUE cJSContext;
 VALUE cJSFunction;
 VALUE cSMJS;
 JSRuntime* gSMJS_runtime;
+
+#ifdef DEBUG
+int alloc_count_js2rb;
+int alloc_count_rb2js;
+#endif
 
 // RubyObject/RubyFunction が持つ情報 : Properties
 typedef struct{
@@ -782,7 +801,7 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	int status;
 
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, argv[0] ) );
-	//printf("_noSuchMethod__( %s )", keyname );
+	trace("_noSuchMethod__( %s )", keyname );
 	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
 	if( !so ){
 		so = JS_GetInstancePrivate( cx, thisobj, &JSRubyObjectClass, NULL );
@@ -793,11 +812,11 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	}
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 	if( strcmp( keyname, g_last0arity.keyname ) == 0 ){
-	//printf("!\n" );
+		trace("  == g_last0arity.keyname" );
 		*rval = g_last0arity.val;
 		return JS_TRUE;
 	}
-	//printf("!=%s]", g_last0arity.keyname );
+	trace("  != g_last0arity.keyname [%s]", g_last0arity.keyname );
 #endif
 
 	if (argc != 2)
@@ -869,6 +888,7 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
+	trace("rbsm_proc_to_function(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	JS_SetPrivate( cx, jo, (void*)so );
 	return jo;
 }
@@ -882,7 +902,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	VALUE ret;
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 
-	//printf( "_get_property_( %s )", keyname );
+	trace( "_get_property_( %s )", keyname );
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
@@ -984,6 +1004,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
+	trace("rbsm_ruby_to_jsobject(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunction( cx, jo, "__noSuchMethod__", rbsm_class_no_such_method, 2, 0 );
 	return jo;
@@ -996,6 +1017,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 	
 	so = (sSMJS_Class*)JS_GetPrivate( cx, obj );
 	if( so ){
+		trace("rbsm_class_finalize(obj=%x); [count %d -> %d]", obj, alloc_count_rb2js, --alloc_count_rb2js);
 		if( so->rbobj ){
 			if( JS_GetContextPrivate( cx ) ){
 				VALUE context = RBSMContext_FROM_JsContext( cx );
@@ -1011,7 +1033,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 // SpiderMonkey::Valueのデストラクタ : SpiderMonkey::Value Destructor
 static void 
 rb_smjs_value_free( sSMJS_Value* sv ){
-	//printf( "value_free(cx=%x)\n", sv->cs->cx );
+	trace( "value_free(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, sv->value, alloc_count_js2rb, --alloc_count_js2rb );
 	if( sv->value && sv->cs->store ){
 		rbsm_remove_jsval_to_rbval( sv->cs, sv->value );
 	}
@@ -1036,6 +1058,8 @@ rb_smjs_value_new_jsval( VALUE context, jsval value ){
 	self = Data_Make_Struct( cJSValue, sSMJS_Value, 0, rb_smjs_value_free, sv );
 	Data_Get_Struct( context, sSMJS_Context, sv->cs );
 	sv->value = value;
+	trace( "value_new(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, value, alloc_count_js2rb, ++alloc_count_js2rb );
+
 	// context をインスタンス変数として持つ 
 	// It has the context as an instance variable.
 	rb_iv_set( self, RBSMJS_VALUES_CONTEXT, context );
@@ -1380,7 +1404,7 @@ rb_smjs_context_get_scope_chain( VALUE self ){
 // Free the memory allocated to this context instance.
 static void
 rb_smjs_context_free( sSMJS_Context* cs ){
-	//printf( "context_free" );
+	trace( "context_free" );
 	if( cs->cx ){
 		//JSコンテキストの破棄 
 		// Destruction of the JavaScript context
@@ -1416,16 +1440,15 @@ static void
 rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report ){
 	sSMJS_Context* cs;
 
-	//printf("JSErrorReport; ispending = %d, flags = %d, exception: %d\n", JS_IsExceptionPending(cx), report->flags, JSREPORT_IS_EXCEPTION( report->flags ));
 	if( JSREPORT_IS_EXCEPTION( report->flags ) ){
 		// 例外をContext毎に記録する 
 		// The exception is recorded in our context
 		VALUE context = RBSMContext_FROM_JsContext( cx );
 		Data_Get_Struct( context, sSMJS_Context, cs );
 		strncpy( cs->last_message, message, BUFSIZ );
-		// printf( "error occer (%s)\n", message );
+		trace( "error occer (%s)", message );
 		JS_GetPendingException( cx, &cs->last_exception );
-		// printf( "get pending excepiton(%x)\n", cs->last_exception );
+		trace( "get pending excepiton(%x)", cs->last_exception );
 	}
 }
 
@@ -1589,7 +1612,7 @@ static void
 smjs_runtime_release( ){
 	JS_DestroyRuntime( gSMJS_runtime );
 	JS_ShutDown( );
-	// printf( "runtime free\n" );
+	trace( "runtime free" );
 }
 
 static void 
