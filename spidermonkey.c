@@ -381,8 +381,12 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	}
 	switch( TYPE( rval ) ){
 	case T_STRING: return rbsm_rubystring_to_jsval( cx, rval, jval );
-	case T_FIXNUM: //return INT_TO_JSVAL( NUM2INT( rval ) ); 
-	case T_FLOAT: //return INT_TO_JSVAL( NUM2INT( rval ) ); 
+	case T_FIXNUM:
+		if( NUM2LONG( rval ) >= INT_MIN && NUM2LONG( rval ) <= INT_MAX && INT_FITS_IN_JSVAL( NUM2INT( rval ) ) ){
+			*jval = INT_TO_JSVAL( NUM2INT( rval ) );
+			break;
+		}
+	case T_FLOAT: 
 	case T_BIGNUM: return JS_NewDoubleValue( cx, NUM2DBL( rval ), jval );
 	case T_TRUE:  *jval = JSVAL_TRUE; break;
 	case T_FALSE: *jval = JSVAL_FALSE; break;
