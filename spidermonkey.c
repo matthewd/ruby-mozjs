@@ -657,7 +657,6 @@ rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 		lineno = NUM2INT( line );
 
 	//cs->last_exception = 0;
-	JS_MaybeGC( cs->cx );
 	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), filename, lineno, &value );
 	if( !ok ) rb_smjs_raise_ruby( cs->cx );
 	return value;
@@ -874,7 +873,7 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	int status;
 
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, argv[0] ) );
-	trace("_noSuchMethod__( %s )", keyname );
+	trace("_noSuchMethod__(cx=%x, keyname=%s)", cx, keyname );
 	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
 	if( !so ){
 		so = JS_GetInstancePrivate( cx, thisobj, &JSRubyObjectClass, NULL );
@@ -987,7 +986,7 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
-	trace("rbsm_proc_to_function(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
+	trace("rbsm_proc_to_function(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	return jo;
@@ -1005,7 +1004,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 
 	// FIXME: Every rb_funcall() below should be protected.
 
-	trace( "_get_property_( %s )", keyname );
+	trace( "_get_property_(cx=%x, keyname=%s)", cx, keyname );
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
@@ -1132,7 +1131,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
-	trace("rbsm_ruby_to_jsobject(obj=%x); [count %d -> %d]", jo, alloc_count_rb2js, ++alloc_count_rb2js);
+	trace("rbsm_ruby_to_jsobject(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
@@ -1146,7 +1145,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 	
 	so = (sSMJS_Class*)JS_GetPrivate( cx, obj );
 	if( so ){
-		trace("rbsm_class_finalize(obj=%x); [count %d -> %d]", obj, alloc_count_rb2js, --alloc_count_rb2js);
+		trace("rbsm_class_finalize(cx=%x, obj=%x); [count %d -> %d]", cx, obj, alloc_count_rb2js, --alloc_count_rb2js);
 		if( so->rbobj ){
 			if( JS_GetContextPrivate( cx ) ){
 				VALUE context = RBSMContext_FROM_JsContext( cx );
@@ -1458,8 +1457,6 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	pname = StringValuePtr( rargv[0] );
 	Data_Get_Struct( self, sSMJS_Value, sv );
 
-	JS_MaybeGC( sv->cs->cx );
-
 	// 引数をJavaScriptの変数に 
 	// Convert the arguments from Ruby to JavaScript values.
 	//jsval* jargv = _alloca( sizeof( jsval*) * ( argc - 1 ) );
@@ -1555,8 +1552,6 @@ rbsm_destroy_context( sSMJS_Context* cs ){
 
 	trace( "Destroy: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
 
-	JS_GC( cs->cx );
-
 	trace( "DESTROY: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
 
 	//JSコンテキストの破棄 
@@ -1574,7 +1569,7 @@ rbsm_destroy_context( sSMJS_Context* cs ){
 // Free the memory allocated to this context instance.
 static void
 rb_smjs_context_free( sSMJS_Context* cs ){
-	trace( "context_free" );
+	trace( "context_free(cx=%x)", cs->cx );
 	rbsm_destroy_context( cs );
 
 	//構造体のメモリを解放 
@@ -1621,6 +1616,7 @@ static VALUE
 rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Context* cs;
 	int stacksize;
+	int options;
 	Data_Get_Struct( self, sSMJS_Context, cs );
 
 	strncpy( cs->last_message, "<<NO MESSAGE>>", BUFSIZ );
@@ -1637,9 +1633,17 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	if( !cs->cx )
 		rb_raise( eJSError, "Failed to create context" );
 
+	JS_SetOptions( cs->cx, JS_GetOptions( cs->cx )
 #ifdef JSOPTION_DONT_REPORT_UNCAUGHT
-	JS_SetOptions( cs->cx, JS_GetOptions( cs->cx ) | JSOPTION_DONT_REPORT_UNCAUGHT );
+		| JSOPTION_DONT_REPORT_UNCAUGHT
 #endif
+#ifdef JSOPTION_VAROBJFIX
+		| JSOPTION_VAROBJFIX
+#endif
+#ifdef JSOPTION_XML
+		| JSOPTION_XML
+#endif
+	);
 
 	JS_SetContextPrivate( cs->cx, (void*)self );
 	
@@ -1684,8 +1688,6 @@ rb_smjs_context_flush( VALUE self ){
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
 	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
 
-	JS_GC( cs->cx );
-	
 	return Qnil;
 }
 
