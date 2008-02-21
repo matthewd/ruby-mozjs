@@ -421,6 +421,8 @@ rb_smjs_convert_prim( JSContext* cx, jsval value ){
 		if( so ){
 			return so->rbobj;
 		}
+		if( JS_IsArrayObject( cx, jo ) )
+			return rb_smjs_to_a( cx, value, RBSM_CONVERT_SHALLOW );
 	default:
 		context = RBSMContext_FROM_JsContext( cx );
 		return rb_smjs_value_new_jsval( context, value );
