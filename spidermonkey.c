@@ -1131,6 +1131,17 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 		VALUE msec = rb_funcall( rb_funcall( obj, rb_intern( "strftime" ), 1, rb_str_new2( "%s" ) ), rb_intern( "to_i" ), 0);
 		return rbsm_ruby_to_jsdate( cx, msec );
 	}
+	if( rb_obj_is_kind_of( obj, rb_cArray ) ){
+		long i;
+		long len = rb_ary_size( obj );
+		jsval tmp;
+		jo = JS_NewArrayObject( cx, 0, NULL );
+		for( i = 0; i < len; i++ ){
+			rb_smjs_ruby_to_js( cx, rb_ary_entry( obj, i ), &tmp );
+			JS_SetElement( cx, jo, i, &tmp );
+		}
+		return jo;
+	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
 	trace("rbsm_ruby_to_jsobject(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
