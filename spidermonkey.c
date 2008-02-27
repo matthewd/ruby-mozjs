@@ -1109,6 +1109,8 @@ rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
 	return JSVAL_TO_OBJECT( dateval );
 }
 
+inline static long rb_ary_size(VALUE ary) { return RARRAY(ary)->len; }
+
 // rubyobj obj を javascript で使えるようにラップする 
 // To access a Ruby object from JavaScript, we wrap it.
 static JSObject*
