@@ -345,7 +345,6 @@ rb_smjs_convertvalue( JSContext* cx, jsval value ){
 	case JSTYPE_NUMBER:
 		return rb_smjs_to_num( cx, value );
 	case JSTYPE_FUNCTION:
-		//rb_raise ( eJSConvertError, "function no support [%s]", JS_GetStringBytes(JS_ValueToString(cx, value)) ); break;
 		rb_raise ( eJSConvertError, "Unsupported: cannot convert JavaScript function to Ruby" ); break;
 	default:
 		rb_raise ( eJSConvertError, "Unsupported object type" );
@@ -393,9 +392,9 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 
 static VALUE 
 rb_smjs_convert_prim( JSContext* cx, jsval value ){
-	JSType t = JS_TypeOfValue( cx, value );
 	JSObject* jo;
 	sSMJS_Class* so;
+	JSType t = JS_TypeOfValue( cx, value );
 	VALUE context;
 	switch( t ){
 	case JSTYPE_VOID:    return Qnil;
@@ -640,7 +639,6 @@ rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 		lineno = NUM2INT( line );
 
 	//cs->last_exception = 0;
-	JS_MaybeGC( cs->cx );
 	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), filename, lineno, &value );
 	if( !ok ) rb_smjs_raise_ruby( cs->cx );
 	return value;
@@ -825,7 +823,7 @@ rb_smjs_value_function_callback( JSContext* cx, JSObject* thisobj, uintN argc, j
 	// Run proc
 	res = rb_protect( rb_smjs_ruby_proc_caller, rargs, &status );
 	
-	// If an exception was thrown, raise a JS exception
+	// If a Ruby exception was thrown, raise a JS exception
 	if( status != 0 )
 		return rb_smjs_raise_js( cx, status );
 	
@@ -1310,7 +1308,7 @@ rb_smjs_value_function( int argc, VALUE* argv, VALUE self ){
 	jsval jname;
 	sSMJS_Value* sv;
 
-	// Analyse the given arguments
+	// Analyze the given arguments
 	rb_scan_args( argc, argv, "1&", &name, &proc );
 
 	// Make sure it's actually a proc
@@ -1389,8 +1387,6 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	
 	pname = StringValuePtr( rargv[0] );
 	Data_Get_Struct( self, sSMJS_Value, sv );
-
-	JS_MaybeGC( sv->cs->cx );
 
 	// Convert the arguments from Ruby to JavaScript values.
 #ifdef WIN32
@@ -1527,7 +1523,7 @@ rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* 
 		strncpy( cs->last_message, message, BUFSIZ );
 		trace( "An error occurred (%s)", message );
 		JS_GetPendingException( cx, &cs->last_exception );
-		trace( "Get Pending Excepiton (%x)", cs->last_exception );
+		trace( "Get Pending Exception (%x)", cs->last_exception );
 	}
 }
 
