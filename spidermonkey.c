@@ -33,6 +33,7 @@
 #define RBSMJS_VALUES_CONTEXT "@context"
 #define RBSMJS_CONTEXT_GLOBAL "global"
 #define RBSMJS_CONTEXT_BINDINGS "bindings"
+#define RBSMJS_RUBY_TO_JS_MAP "$mozjs_mapping"
 
 #define RBSM_CONVERT_SHALLOW 1
 #define RBSM_CONVERT_DEEP    0
@@ -1148,6 +1149,14 @@ rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 // Wrap Ruby object in JS object
 static JSObject*
 rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
+
+	// Check if we've already converted this object into a JS Object
+	if(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP) == Qnil) rb_gv_set(RBSMJS_RUBY_TO_JS_MAP, rb_hash_new());
+	if(rb_funcall(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_intern("key?"), 1, obj) == Qtrue) {
+		jsval js = (jsval)FIX2INT(rb_hash_aref(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj));
+		return JSVAL_TO_OBJECT(js);
+	}
+	
 	JSObject* jo;
 	sSMJS_Value* sv;
 	sSMJS_Class* so;
@@ -1162,6 +1171,9 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
+	
+	rb_hash_aset(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj, INT2FIX((int)OBJECT_TO_JSVAL(jo)));
+	
 	return jo;
 }
 
@@ -1180,6 +1192,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 				if( RTEST( bindings ) ){
 					rb_hash_delete( rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS ), rb_obj_id( so->rbobj ) );
 				}
+				rb_hash_delete( rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), so->rbobj);
 			}
 		}
 		if( so->jsv ){
