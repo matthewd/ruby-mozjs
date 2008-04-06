@@ -18,7 +18,7 @@
 #  include <jsobj.h>
 #endif
 
-// デフォルトのスタックサイズ : Default stack size
+// Default stack size
 #define JS_STACK_CHUNK_SIZE    16384
 
 // SETTING THIS TOO LOW RESULTS IN SEGFAULTS!
@@ -33,6 +33,7 @@
 #define RBSMJS_VALUES_CONTEXT "@context"
 #define RBSMJS_CONTEXT_GLOBAL "global"
 #define RBSMJS_CONTEXT_BINDINGS "bindings"
+#define RBSMJS_RUBY_TO_JS_MAP "$mozjs_mapping"
 
 #define RBSM_CONVERT_SHALLOW 1
 #define RBSM_CONVERT_DEEP    0
@@ -69,38 +70,35 @@ int alloc_count_js2rb;
 int alloc_count_rb2js;
 #endif
 
-// RubyObject/RubyFunction が持つ情報 : Properties
+// RubyObject/RubyFunction Properties
 typedef struct{
 	VALUE rbobj;
 	jsval jsv;
 }sSMJS_Class;
 
-// RubyException エラー : Error
+// RubyException Error
 typedef struct{
 	int status;
 	jsval erval;
 	VALUE errinfo;
 }sSMJS_Error;
 
-// SpiderMonkey::Context -- インスタンスが持つ情報を格納した構造体
-//                       -- Structure containing instance data
+// SpiderMonkey::Context -- Structure containing instance data
 typedef struct{
 	JSContext* cx;
-	jsval last_exception; // 最後のJS例外 : Last JS Exception
-	char last_message[BUFSIZ]; // 最後のエラーメッセージ : Last Error Message
-	JSObject* store; // 対JS-GC用store : "For opposite JS-GC store"
-	JSHashTable* id2rbval; // JS-VALUE値とRuby-Object#__id__の対 : "JS-VALUE value and Ruby-Object#__id__[no] opposite"
+	jsval last_exception; // Last JS Exception
+	char last_message[BUFSIZ]; // Last Error Message
+	JSObject* store; // "JS Store for the pair-GC"
+	JSHashTable* id2rbval; // JS-VALUE for Ruby-Object#__id__
 }sSMJS_Context;
 
-// SpiderMonkey::Value -- インスタンスが持つ情報を格納した構造体 
-//                     -- Structure containing instance data
+// SpiderMonkey::Value -- Structure containing instance data
 typedef struct{
 	jsval value;
 	sSMJS_Context* cs;
 }sSMJS_Value;
 
-// each 用に必要な情報を持つ構造体 
-// "The structure which has the information which is necessary for business"
+// Data required for yield methods
 typedef struct{
 	JSContext* cx;
 	JSObject* obj;
@@ -119,6 +117,8 @@ typedef VALUE(* RBSMJS_Convert)( JSContext* cx, jsval val );
 static VALUE RBSMContext_FROM_JsContext( JSContext* cx );
 static JSBool rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
+static JSBool rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **objp );
+static int rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id);
 static JSBool rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static void rbsm_class_finalize ( JSContext* cx, JSObject* obj );
 static JSBool rb_smjs_value_object_callback( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval );
@@ -141,6 +141,7 @@ static void* rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* da
 static JSObjectOps* rbsm_class_get_object_ops( JSContext* cx, JSClass* clasp );
 static void rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report );
 static VALUE rb_smjs_context_flush( VALUE self );
+static VALUE rb_smjs_value_call_with_this(int argc, VALUE* rargv, VALUE self);
 
 typedef enum RBSMErrNum{
 #define MSG_DEF( name, number, count, exception, format ) \
@@ -172,10 +173,10 @@ JSCLASS_NO_OPTIONAL_MEMBERS
 };
 
 static JSClass JSRubyObjectClass = {
-	"RubyObject", JSCLASS_HAS_PRIVATE,
+	"RubyObject", JSCLASS_HAS_PRIVATE | JSCLASS_NEW_RESOLVE,
 	/*addp*/JS_PropertyStub,  /*delpr*/JS_PropertyStub,
 	/*getp*/rbsm_class_get_property,   /*setp*/rbsm_class_set_property,
-	JS_EnumerateStub, JS_ResolveStub, JS_ConvertStub, rbsm_class_finalize,
+	JS_EnumerateStub, (JSResolveOp)rbsm_resolve, JS_ConvertStub, rbsm_class_finalize,
 	/* getObjectOps */NULL, /*checkAccess */NULL, /*call*/rb_smjs_value_object_callback,
 	/* construct*/NULL, /* xdrObject*/NULL, /* hasInstance*/NULL, /* mark*/NULL,
 	/* spare*/0
@@ -211,18 +212,14 @@ static JSClass JSRubyExceptionClass = {
 static JSObjectOps rbsm_FunctionOps;
 
 // convert -------------------------------------------------------
-/*
-=begin
- JS変数をRubyのStringオブジェクトに変更
- Convert a JavaScript variable to a Ruby String
-=end
-*/
+// Convert a JS object to a Ruby String
 static VALUE 
 rb_smjs_to_s( JSContext* cx, jsval value ){
 	JSString* str = JS_ValueToString( cx, value );
 	return rb_str_new( JS_GetStringBytes( str ), JS_GetStringLength( str ) );
 }
 
+// Convert a JS object to a Ruby Boolean
 static VALUE 
 rb_smjs_to_bool( JSContext* cx, jsval value ){
 	JSBool bp;
@@ -232,6 +229,7 @@ rb_smjs_to_bool( JSContext* cx, jsval value ){
 	return bp ? Qtrue : Qfalse;
 }
 
+// Convert a JS object to a Ruby Array
 static VALUE 
 rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 	VALUE ary;
@@ -353,7 +351,6 @@ rb_smjs_convertvalue( JSContext* cx, jsval value ){
 	case JSTYPE_NUMBER:
 		return rb_smjs_to_num( cx, value );
 	case JSTYPE_FUNCTION:
-		//rb_raise ( eJSConvertError, "function no support [%s]", JS_GetStringBytes(JS_ValueToString(cx, value)) ); break;
 		rb_raise ( eJSConvertError, "Unsupported: cannot convert JavaScript function to Ruby" ); break;
 	default:
 		rb_raise ( eJSConvertError, "Unsupported object type" );
@@ -361,8 +358,7 @@ rb_smjs_convertvalue( JSContext* cx, jsval value ){
 	}
 }
 
-// Rubyの文字列を jsvalへ変換 
-// Convert a Ruby string to a JavaScript value.
+// Ruby String to JavaScript String
 static JSBool
 rbsm_rubystring_to_jsval( JSContext* cx, VALUE rval, jsval* jval ){
 	JSString* jsstr;
@@ -373,8 +369,7 @@ rbsm_rubystring_to_jsval( JSContext* cx, VALUE rval, jsval* jval ){
 	return JS_FALSE;
 }
 
-// Rubyの変数VALUE rval を jsval jval へ変換 
-// Convert a Ruby value to a JavaScript value.
+// Ruby Object to JS Object
 static JSBool
 rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	if( rb_obj_is_instance_of( rval, cJSValue ) ){
@@ -401,13 +396,11 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	return JS_TRUE;
 }
 
-// 適度コンバートする 適度=プリミティブ値、nullのみ 
-// Convert a JavaScript value to a Ruby value.
 static VALUE 
 rb_smjs_convert_prim( JSContext* cx, jsval value ){
-	JSType t = JS_TypeOfValue( cx, value );
 	JSObject* jo;
 	sSMJS_Class* so;
+	JSType t = JS_TypeOfValue( cx, value );
 	VALUE context;
 	switch( t ){
 	case JSTYPE_VOID:    return Qnil;
@@ -441,8 +434,7 @@ rb_smjs_context_get_global( VALUE self ){
 	return rb_iv_get( self, RBSMJS_CONTEXT_GLOBAL );
 }
 
-// JS例外をRuby例外として投げる 
-// Throw a JavaScript exception as a Ruby exception.
+// Convert a JavaScript Exception to Ruby Exception
 static void
 rb_smjs_raise_ruby( JSContext* cx ){
 	sSMJS_Error* se;
@@ -471,7 +463,7 @@ rb_smjs_raise_ruby( JSContext* cx ){
 
 	if( JSVAL_IS_OBJECT( jsvalerror ) &&
 		( jo = JSVAL_TO_OBJECT( jsvalerror ) ) ) {
-		// 元がRuby例外ならそれを継続 
+
 		// If it was originally a Ruby exception, we continue that.
 		se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
 		if( se ){
@@ -481,7 +473,6 @@ rb_smjs_raise_ruby( JSContext* cx ){
 		}
 	}
 
-	// 元がJS例外なら EvalError を作成してRubyに投げる 
 	// If the exception originated with JavaScript, we build and throw an
 	// EvalError to Ruby.
 	self = rbsm_evalerror_new_jsval( context, jsvalerror );
@@ -489,7 +480,6 @@ rb_smjs_raise_ruby( JSContext* cx ){
 	rb_exc_raise( self );
 }
 
-// Ruby例外をJS例外として投げる 
 // Throw a Ruby exception as a JavaScript exception.
 static JSBool
 rb_smjs_raise_js( JSContext* cx, int status ){
@@ -558,17 +548,14 @@ rbsm_GetErrorMessage( void* userRef, const char* locale, const uintN errorNumber
 	return &rbsm_ErrorFormatString[errorNumber];
 }
 
-// JS例外として投げられたRuby例外の文字化 
-// String conversion of a Ruby exception that has been thrown as a
-// JavaScript exception.
+// Convert a Ruby Exception to a JS String
 static JSBool 
 rbsm_rubyexception_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval ){
 	sSMJS_Error* se;
 	VALUE msg;
 	se = JS_GetInstancePrivate( cx, obj, &JSRubyExceptionClass, NULL );
 	if( !se ){ 
-		// TODO: 正しい関数名、オブジェクト名を出す 
-		// TODO: Output the correct object and function names
+		// TODO: The function name should be the Object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyException", "toString", "Object" );
 		return JS_FALSE;
 	}
@@ -577,7 +564,7 @@ rbsm_rubyexception_to_string( JSContext* cx, JSObject* obj, uintN argc, jsval* a
 	return JS_TRUE;
 }
 
-// jsval -> RubyObject のハッシュテーブル : Hash Table
+// jsval -> RubyObject Hash
 static JSHashNumber
 jsid2hash( const void* key ){
 	return (JSHashNumber)key;
@@ -597,7 +584,8 @@ rbsm_set_jsval_to_rbval( sSMJS_Context* cs, VALUE self, jsval value ){
 	char pname[10];
 	JSHashEntry* x = JS_HashTableAdd( cs->id2rbval, (const void*)value, (void*)rb_obj_id( self ) );
 	if( !x ) rb_raise( eJSError, "fail to set rbval to HashTable" );
-	// JS-GC対策用storeに値を設定 : Setting value to the one for JS-GC measure store
+
+	// Setting value to the one for JS-GC measure store
 	sprintf( pname, "%x", (int)value );
 	JS_SetProperty( cs->cx, cs->store, pname, &value );
 }
@@ -742,12 +730,11 @@ rb_smjs_value_each_with_index_yield( sSMJS_Enumdata* enm ){
 	rb_yield_values( 2, rb_smjs_convertvalue( enm->cx,  enm->key ), rb_smjs_convert_prim(  enm->cx,  enm->val ) );
 }
 
-// protect 内で proc を呼ぶ。引数 args は rb_ary で、最後に proc が入っている 
 // Calls a Proc from inside protect; args is a Ruby array with the Proc
 // appended.
 static VALUE
 rb_smjs_ruby_proc_caller( VALUE args ){
-	// Procを実行 : The Proc to execute
+	// The proc to execute
 	VALUE proc;
 	proc = rb_ary_pop( args );
 	return rb_apply( proc, rb_intern( "call" ), args );
@@ -785,7 +772,7 @@ struct{
 }g_last0arity;
 #endif
 
-// Ruby Object#[]
+// Ruby Object#[] called in JS as JSObject()
 static JSBool
 rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* argv, jsval* rval ){
 	JSObject* fobj;
@@ -807,16 +794,15 @@ rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* 
 
 	so = (sSMJS_Class*)JS_GetPrivate( cx, fobj );
 	
-	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
+	// Argument in SpiderMonkey::Value
 	rargs = rb_ary_new2( argc + 1 );
 	for( i = 0 ; i < argc ; i++ )
 		rb_ary_store( rargs, i, rb_smjs_convert_prim( cx, argv[i] ) );
 	rb_ary_store( rargs, i, so->rbobj );
 	
-	// proc を実行 : The Proc to execute
+	// Execute the proc
 	res = rb_protect( rb_smjs_ruby_box_caller, rargs, &status );
 	
-	// Ruby関数実行結果、例外が投げられた場合はJS例外にラップして投げる 
 	// Check the Ruby function execution result; if an exception was
 	// thrown, we raise a corresponding error in JavaScript.
 	if( status != 0 )
@@ -825,7 +811,6 @@ rb_smjs_value_object_callback( JSContext* cx, JSObject* obj, uintN argc, jsval* 
 	return rb_smjs_ruby_to_js( cx, res, rval );
 }
 
-// Ruby proc/method がJavaScriptから呼ばれた
 // Ruby method called from JavaScript
 static JSBool
 rb_smjs_value_function_callback( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval ){
@@ -838,18 +823,15 @@ rb_smjs_value_function_callback( JSContext* cx, JSObject* thisobj, uintN argc, j
 	fobj = JSVAL_TO_OBJECT( argv[-2] );
 	so = (sSMJS_Class*)JS_GetPrivate( cx, fobj );
 	
-	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
 	rargs = rb_ary_new2( argc + 1 );
 	for( i = 0 ; i < argc ; i++ )
 		rb_ary_store( rargs, i, rb_smjs_convert_prim( cx, argv[i] ) );
 	rb_ary_store( rargs, i, so->rbobj );
 	
-	// proc を実行 : The Proc to execute
+	// Run proc
 	res = rb_protect( rb_smjs_ruby_proc_caller, rargs, &status );
 	
-	// Ruby関数実行結果、例外が投げられた場合はJS例外にラップして投げる 
-	// Check the Ruby function execution result; if an exception was
-	// thrown, we raise a corresponding error in JavaScript.
+	// If a Ruby exception was thrown, raise a JS exception
 	if( status != 0 )
 		return rb_smjs_raise_js( cx, status );
 	
@@ -896,17 +878,14 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	if (argc != 2)
 		return JS_FALSE;
 
-	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
 	rargs = rb_smjs_convertvalue( cx, argv[1] );
 	rb_ary_unshift( rargs, ID2SYM( rb_intern( keyname ) ) );
 	rb_ary_push( rargs, so->rbobj );
 	
-	// proc を実行 : The Proc to execute
+	// Call method_missing
 	res = rb_protect( rb_smjs_ruby_missing_caller, rargs, &status );
 	
-	// Ruby関数実行結果、例外が投げられた場合はJS例外にラップして投げる 
-	// Check the Ruby function execution result; if an exception was
-	// thrown, we raise a corresponding error in JavaScript.
+	// If an exception was thrown, raise a JS exception
 	if( status != 0 )
 		return rb_smjs_raise_js( cx, status );
 	
@@ -949,8 +928,7 @@ rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Error* se;
 	se = JS_GetInstancePrivate( cx, obj, &JSRubyExceptionClass, NULL );
 	if( !se ){
-		// TODO: 正しい関数名、オブジェクト名を出す 
-		// TODO: Output the correct object and function names
+		// TODO: Use the object's name as the function name
 		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
@@ -979,8 +957,7 @@ rbsm_wrap_class( JSContext* cx, VALUE rbobj ){
 	return so;
 }
 
-// Ruby のProcを JSのfunctionとしてラップして返す 
-// Convert a Ruby Proc to a JavaScript function
+// Convert a Ruby Proc to a JS function
 static JSObject*
 rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	JSObject* jo;
@@ -995,14 +972,75 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 }
 
 static JSBool
+rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **objp ) {
+	if(!rbsm_check_ruby_property(cx, obj, id)) {
+		return JS_TRUE;
+	}
+
+	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+
+	JS_DefineProperty(cx, obj, keyname, JSVAL_TRUE, 
+		rbsm_class_get_property, rbsm_class_set_property, JSPROP_ENUMERATE);
+
+	*objp = obj;
+	return JS_TRUE;
+}
+
+static int
+rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {     
+	sSMJS_Class *so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
+	VALUE rbobj = so->rbobj;
+
+	ID brackets   = rb_intern("[]");
+	ID key_meth   = rb_intern("key?");
+	ID array_like = rb_intern("array_like?");
+
+	int keynumber;
+	char *keyname;
+
+	if(rb_respond_to(rbobj, brackets)) {
+		if(JSVAL_IS_INT(id) &&
+				(rb_obj_is_kind_of(rbobj, rb_cArray) || 
+				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
+			return 1 != 1;
+		} else if(rb_respond_to(rbobj, key_meth)) {
+			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+			return RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
+		}
+	}
+}
+
+static JSBool
 rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE rbobj ){
 	char* keyname;
 	ID rid;
 	VALUE method;
 	int iarity;
 	VALUE ret;
+	
+	ID brackets = rb_intern("[]");
+	if(rb_respond_to(rbobj, brackets)) {
+		ID key_meth = rb_intern("key?");
+		ID array_like = rb_intern("array_like?");
+
+		if(JSVAL_IS_INT(id) &&
+				(rb_obj_is_kind_of(rbobj, rb_cArray) || 
+				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
+			int keynumber = JSVAL_TO_INT( id );
+			// printf( "_get_property_( %d )", keynumber );
+			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
+		} else if(rb_respond_to(rbobj, key_meth)) {
+			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+			JS_DeleteProperty(cx, obj, keyname);
+			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
+				// printf( "_get_property_( %s )", keyname );
+				return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, rb_str_new2(keyname)), vp);
+			}
+		}
+	}
 
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+	JS_DeleteProperty(cx, obj, keyname);
 
 	// FIXME: Every rb_funcall() below should be protected.
 
@@ -1010,62 +1048,79 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
-			RTEST( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rb_intern( "constants" ) ) ) ) &&
+			rb_respond_to(rbobj, rb_intern("const_defined?")) &&
 			rb_const_defined( rbobj, rid ) ){
-		// 定数はその値を返す 
-		// Constant returns the value
+		// The return value is a constant
 		return rb_smjs_ruby_to_js( cx, rb_const_get( rbobj, rid ), vp );
 	}else if( RTEST( rb_funcall( rbobj, rb_intern( "respond_to?" ), 1, ID2SYM( rid ) ) ) ){
 		method = rb_funcall( rbobj, rb_intern( "method" ), 1, ID2SYM( rid ) );
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
-		// メソッドの引数の数を調べる 
-		// We check the number of arguments the method takes
 		iarity = NUM2INT( rb_funcall( method, rb_intern( "arity" ), 0 ) );
+		// If the arity is 0
 		if( iarity == 0 /*|| iarity == -1*/ ){
+			// Call the function and return it as the property
 			JSBool success;
 			int status;
-			// 引数0のメソッドはプロパティーとして値を取得 
-			// A method with 0 arguments directly returns the value, acting as a property
 			ret = rb_protect( rb_smjs_ruby_proc_caller3, method, &status );
 			if( status != 0 )
 				return rb_smjs_raise_js( cx, status );
-			//ret = rb_funcall( rbobj, rid, 0 );
 			success = rb_smjs_ruby_to_js( cx, ret, vp );
 			g_last0arity.keyname = keyname == "ID" ? "id" : keyname;
 			g_last0arity.val = *vp;
 			return success;
-		}else{
-			// 引数0以上、あるいは可変引数のメソッドはfunctionオブジェクトにして返す 
-			// Methods with more than zero arguments (or a variable number)
-			// result in a JavaScript function object.
+		} else {
 			*vp = OBJECT_TO_JSVAL( rbsm_proc_to_function( cx, method ) );
+			return JS_TRUE;
 		}
 #else
 		*vp = OBJECT_TO_JSVAL( rbsm_proc_to_function( cx, method ) );
+		return JS_TRUE;
 #endif
 	}
+	*vp = JSVAL_VOID;
 	return JS_TRUE;
 }
 
 static JSBool
 rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE rbobj ){
-	char* pkeyname;
+	VALUE pkeyname;
 	char keyname[BUFSIZ];
 	ID rid;
 	int status;
-	VALUE vals = rb_ary_new2( 3 );
+	VALUE vals;
 	
-	pkeyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
-	sprintf( keyname, "%s=", pkeyname );
-	rid = rb_intern( keyname );
-	// 引数をSpiderMonkey::Valueに : Argument in SpiderMonkey::Value
-	rb_ary_push( vals, rb_smjs_convert_prim( cx, vp[0] ) );
-	rb_ary_push( vals, rid );
-	rb_ary_push( vals, rbobj );
-	// proc を実行 : The Proc to execute
+	ID brackets = rb_intern("[]=");
+	
+	if(JSVAL_IS_INT(id))
+		pkeyname = INT2NUM(JSVAL_TO_INT(id));
+	else
+		pkeyname = rb_str_new2(JS_GetStringBytes( JS_ValueToString( cx, id ) ));
+
+	if(rb_respond_to(rbobj, brackets)) {
+		rid = rb_intern("[]=");
+		vals = rb_ary_new2(4);
+		// key
+		rb_ary_push(vals, pkeyname);
+		// thing being assigned
+		rb_ary_push(vals, rb_smjs_convert_prim( cx, vp[0] ));
+	}  else {
+		// call foo=
+		sprintf( keyname, "%s=", pkeyname );
+		rid = rb_intern( keyname );
+		vals = rb_ary_new2( 3 );
+		// thing being assigned
+		rb_ary_push( vals, rb_smjs_convert_prim( cx, vp[0] ) );
+	}
+
+	// method ([]= or foo=)
+	rb_ary_push(vals, rid);
+	// self
+	rb_ary_push(vals, rbobj);
+
+	// Call method(val) inside begin/rescue
 	rb_protect( rb_smjs_ruby_proc_caller2, vals, &status );
-	if( status != 0 )
-		return rb_smjs_raise_js( cx, status );
+	if(status != 0)
+		return rb_smjs_raise_js(cx, status);
 	return JS_TRUE;
 }
 
@@ -1076,8 +1131,7 @@ rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
 		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
-		// TODO: 正しい関数名、オブジェクト名を出す 
-		// TODO: Output the correct object and function names
+		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
 	}
@@ -1089,14 +1143,12 @@ rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
 		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
-		// TODO: 正しい関数名、オブジェクト名を出す 
-		// TODO: Output the correct object and function names
+		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
 	}
 	return rbsm_set_ruby_property( cx, obj, id, vp, so->rbobj );
 }
-
 
 static JSObject*
 rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
@@ -1111,10 +1163,17 @@ rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
 
 inline static long rb_ary_size(VALUE ary) { return RARRAY(ary)->len; }
 
-// rubyobj obj を javascript で使えるようにラップする 
-// To access a Ruby object from JavaScript, we wrap it.
+// Wrap Ruby object in JS object
 static JSObject*
 rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
+
+	// Check if we've already converted this object into a JS Object
+	if(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP) == Qnil) rb_gv_set(RBSMJS_RUBY_TO_JS_MAP, rb_hash_new());
+	if(rb_funcall(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_intern("key?"), 1, obj) == Qtrue) {
+		jsval js = (jsval)FIX2INT(rb_hash_aref(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj));
+		return JSVAL_TO_OBJECT(js);
+	}
+	
 	JSObject* jo;
 	sSMJS_Value* sv;
 	sSMJS_Class* so;
@@ -1150,10 +1209,13 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
+	
+	rb_hash_aset(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj, INT2FIX((int)OBJECT_TO_JSVAL(jo)));
+	
 	return jo;
 }
 
-// RubyObjectClass のデストラクタ : RubyObjectClass Destructor
+// RubyObjectClass destructor
 static void
 rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 	sSMJS_Class* so;
@@ -1168,6 +1230,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 				if( RTEST( bindings ) ){
 					rb_hash_delete( rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS ), rb_obj_id( so->rbobj ) );
 				}
+				rb_hash_delete( rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), so->rbobj);
 			}
 		}
 		if( so->jsv ){
@@ -1179,7 +1242,7 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
 
 // SpiderMonkey::Value ---------------------------------------------------------------------
 
-// SpiderMonkey::Valueのデストラクタ : SpiderMonkey::Value Destructor
+// SpiderMonkey::Value destructor
 static void 
 rb_smjs_value_free( sSMJS_Value* sv ){
 	trace( "value_free(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, sv->value, alloc_count_js2rb, --alloc_count_js2rb );
@@ -1189,42 +1252,35 @@ rb_smjs_value_free( sSMJS_Value* sv ){
 	free( sv );
 }
 
-// Rubyレベルで作成はできないように 
-// SpiderMonkey::Value can't be created directly from within Ruby.
+// Ruby cannot make a SpiderMonkey::Value
 static VALUE
 rb_smjs_value_initialize( VALUE self, VALUE context ){
 	rb_raise( eJSError, "do not create SpiderMonkey::Value" );
 	return Qnil;
 }
 
-// Valueの実際のコンストラクタ 
-// The actual constructor of SpiderMonkey::Value.
+// Actual constructor
 static VALUE
 rb_smjs_value_new_jsval( VALUE context, jsval value ){
 	sSMJS_Context* cs;
 	Data_Get_Struct( context, sSMJS_Context, cs );
 
 	if( rbsm_lookup_jsval_to_rbval( cs, value ) ){
-		// 過去に同じ値でRubyオブジェクトを作成していた場合、そのオブジェクトを取り出す 
-		// When a past Ruby object was created at the same value, we
-		// discard our half-constructed object, and use that instead.
+		// There's already an object in the JS -> RB map
 		return rbsm_get_jsval_to_rbval( cs, value );
 	}else{
+		// There's no object in the JS -> RB map
 		sSMJS_Value* sv;
 		VALUE self;
 
-		// 領域の確保 : "Guarantee of territory?"
 		self = Data_Make_Struct( cJSValue, sSMJS_Value, 0, rb_smjs_value_free, sv );
 		sv->cs = cs;
 		sv->value = value;
 		trace( "value_new(cx=%x, value=%x); [count %d -> %d]", sv->cs->cx, value, alloc_count_js2rb, ++alloc_count_js2rb );
 
-		// context をインスタンス変数として持つ 
-		// It has the context as an instance variable.
+		// A context for instance variables
 		rb_iv_set( self, RBSMJS_VALUES_CONTEXT, context );
 
-		// 過去に作成していなかった場合 
-		// If not, we store this object, and then use it.
 		rbsm_set_jsval_to_rbval( sv->cs, self, value );
 		return self;
 	}
@@ -1245,8 +1301,7 @@ rb_smjs_value_get_context( VALUE self ){
 	return rb_iv_get( self, RBSMJS_VALUES_CONTEXT );
 }
 
-// code を実行し、SpiderMonkey::Valueオブジェクトを返す 
-// Execute code; a SpiderMonkey::Value is returned.
+// Run code and return a SpiderMonkey::Value
 static VALUE
 rb_smjs_value_eval( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Value* sv;
@@ -1254,15 +1309,13 @@ rb_smjs_value_eval( int argc, VALUE* argv, VALUE self ){
 	return rb_smjs_convert_prim( sv->cs->cx, rb_smjs_evalscript( sv->cs, JSVAL_TO_OBJECT( sv->value ), argc, argv ) );
 }
 
-// code を実行し、SpiderMonkey::Valueオブジェクトを返す 
-// Execute code; a SpiderMonkey::Value is returned.
+// Run code and return a SpiderMonkey::Value
 static VALUE
 rb_smjs_value_evalget( int argc, VALUE* argv, VALUE self ){
 	return rb_smjs_value_new_jsval( rb_smjs_value_get_context( self ), rb_smjs_value_evalscript( argc, argv, self ) );
 }
 
-// code を実行し、なるべく近いRuby のオブジェクトを返す 
-// Execute code; where possible, the nearest Ruby object is returned.
+// Run code and return a Ruby object
 static VALUE
 rb_smjs_value_evaluate( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Value* sv;
@@ -1368,8 +1421,7 @@ rb_smjs_value_to_h( VALUE self, VALUE shallow ){
 	return rb_smjs_to_h( sv->cs->cx, sv->value, shal );
 }
 
-// typeof 文字列で返す 
-// Returns the JavaScript typeof this SpiderMonkey::Value as a Ruby string.
+// typeof
 static VALUE
 rb_smjs_value_typeof( VALUE self ){
 	sSMJS_Value* sv;
@@ -1381,7 +1433,7 @@ rb_smjs_value_typeof( VALUE self ){
 	name = JS_GetTypeName( sv->cs->cx, type );
 	return rb_str_new2( name );
 }
-// Ruby関数をJavaScriptに登録する 
+
 // Registers a Ruby function to JavaScript; takes the function name and
 // a Proc as arguments.
 static VALUE
@@ -1392,25 +1444,29 @@ rb_smjs_value_function( int argc, VALUE* argv, VALUE self ){
 	jsval jname;
 	sSMJS_Value* sv;
 
-	// 引数の解析 : Analyse the given arguments
+	// Analyze the given arguments
 	rb_scan_args( argc, argv, "1&", &name, &proc );
+
+	// Make sure it's actually a proc
 	if( !RTEST( proc ) ) {
 		rb_raise( rb_eArgError, "block required" );
 	}
+
 	Data_Get_Struct( self, sSMJS_Value, sv );
 	cname = StringValuePtr( name );
 
 	jo = rbsm_proc_to_function( sv->cs->cx, proc );
+
 	if( rbsm_rubystring_to_jsval( sv->cs->cx, name, &jname ) ){
 		JS_SetProperty( sv->cs->cx, jo, "name", &jname );
 	}
+
 	JS_DefineProperty( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), cname, OBJECT_TO_JSVAL( jo ), NULL, NULL, JSPROP_PERMANENT | JSPROP_READONLY );
 
 	return proc;
 }
 
-// プロパティーを設定する 
-// Set a property
+// To set the property
 static VALUE
 rb_smjs_value_set_property( VALUE self, VALUE name, VALUE val ){
 	sSMJS_Value* sv;
@@ -1429,8 +1485,7 @@ rb_smjs_value_get_properties_yield( sSMJS_Enumdata* enm ){
 	rb_ary_store( (VALUE)enm->data, enm->i, rb_smjs_to_s( enm->cx, enm->key ) );
 
 }
-// プロパティー一覧を取り出す 
-// Return an array listing the properties of the JavaScript object.
+// Get a list of properties
 static VALUE
 rb_smjs_value_get_properties( VALUE self ){
 	VALUE ret;
@@ -1440,8 +1495,7 @@ rb_smjs_value_get_properties( VALUE self ){
 	return ret;
 }
 
-// プロパティーを取り出す 
-// Return the value for a specified property.
+// Get a single property
 static VALUE
 rb_smjs_value_get_property( VALUE self, VALUE name ){
 	sSMJS_Value* sv;
@@ -1454,8 +1508,6 @@ rb_smjs_value_get_property( VALUE self, VALUE name ){
 	return rb_smjs_convert_prim( sv->cs->cx, jval );
 }
 
-// JavaScript関数を呼び出す 
-// Call a JavaScript function.
 static VALUE
 rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	JSBool ok;
@@ -1469,21 +1521,28 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 	jsval jargv[argc - 1];
 #endif
 	
-	pname = StringValuePtr( rargv[0] );
 	Data_Get_Struct( self, sSMJS_Value, sv );
 
-	// 引数をJavaScriptの変数に 
+	if(argc == 0 && JS_TypeOfValue(sv->cs->cx, sv->value) == JSTYPE_FUNCTION) {
+		pname = "call";
+		argc = 1;
+	} else if(argc == 0) {
+		rb_raise(rb_eArgError, "You must pass in a function to call on the object");
+	} else {
+		pname = StringValuePtr( rargv[0] );
+	}
+
 	// Convert the arguments from Ruby to JavaScript values.
-	//jsval* jargv = _alloca( sizeof( jsval*) * ( argc - 1 ) );
+
 #ifdef WIN32
 	jargv = JS_malloc( sv->cs->cx, sizeof( jsval*) * ( argc - 1 ) );
 #endif
+
 	for( i = 1 ; i < argc ; i++ ){
 		rb_smjs_ruby_to_js( sv->cs->cx, rargv[i], &jargv[i - 1] );
 	}
 
-	// 実行 : Execution
-	//sv->cs->last_exception = 0;
+	// Execution
 	ok = JS_CallFunctionName( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), pname, argc - 1, jargv, &jval );
 
 #ifdef WIN32
@@ -1567,9 +1626,6 @@ rbsm_destroy_context( sSMJS_Context* cs ){
 
 	trace( "Destroy: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
 
-	trace( "DESTROY: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
-
-	//JSコンテキストの破棄 
 	// Destruction of the JavaScript context
 	JS_SetContextPrivate( cs->cx, 0 );
 	JS_RemoveRoot( cs->cx, cs->store );
@@ -1580,53 +1636,44 @@ rbsm_destroy_context( sSMJS_Context* cs ){
 	cs->cx = NULL;
 }
 
-// Contextインスタンスに関連づけたメモリを解放する 
-// Free the memory allocated to this context instance.
+// Free the memory allocated to this context instance
 static void
 rb_smjs_context_free( sSMJS_Context* cs ){
 	trace( "context_free(cx=%x)", cs->cx );
 	rbsm_destroy_context( cs );
 
-	//構造体のメモリを解放 
 	// Release the structure's memory
 	free( cs );
 }
 
-// 必要なメモリを確保し、Contextインスタンスにメモリを関連づけ、メモリ解放用の関数を登録する 
 // Required memory is allocated, and a function is registered to handle
 // the release of the allocated memory.
 static VALUE 
 rb_smjs_context_alloc( VALUE self ){
 	sSMJS_Context* cs;
-	// 構造体のメモリを確保する 
 	// Allocate the structure's memory
 	cs = ALLOC( sSMJS_Context );
 	cs->cx = 0;
-	// 確保したメモリと、その解放用関数をRubyオブジェクトに関連づけて返す 
 	// Allocate the required memory, and register our release handler.
 	return Data_Wrap_Struct( self, 0, rb_smjs_context_free, cs );
 }
 
-//エラーレポート 
-// Handle an error report
+// Error Handling
 static void
 rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report ){
 	sSMJS_Context* cs;
 
 	if( JSREPORT_IS_EXCEPTION( report->flags ) ){
-		// 例外をContext毎に記録する 
-		// The exception is recorded in our context
 		VALUE context = RBSMContext_FROM_JsContext( cx );
 		Data_Get_Struct( context, sSMJS_Context, cs );
 		strncpy( cs->last_message, message, BUFSIZ );
-		trace( "error occer (%s)", message );
+		trace( "An error occurred (%s)", message );
 		JS_GetPendingException( cx, &cs->last_exception );
-		trace( "get pending excepiton(%x)", cs->last_exception );
+		trace( "Get Pending Exception (%x)", cs->last_exception );
 	}
 }
 
-// コンテキストの初期化 
-// Initialize the Context
+// Initialize Context
 static VALUE
 rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	sSMJS_Context* cs;
@@ -1637,8 +1684,7 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	strncpy( cs->last_message, "<<NO MESSAGE>>", BUFSIZ );
 	cs->last_exception = 0;
 
-	// コンテキストの作成 
-	// Create the underlying JavaScript context
+	// Create context
 	if( argc == 0 ){
 		stacksize = JS_STACK_CHUNK_SIZE;
 	}else{
@@ -1662,17 +1708,16 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 
 	JS_SetContextPrivate( cs->cx, (void*)self );
 	
-	// ガベレージコレクタのためのマーカー・ハッシュ 
 	cs->store = JS_NewObject( cs->cx, NULL, 0, 0 );
 	if( !cs->store )
 		rb_raise( eJSError, "Failed to create object store" );
 	JS_AddNamedRoot( cs->cx, &(cs->store), "rbsm-store" );
 	cs->id2rbval = JS_NewHashTable( 0, jsid2hash, jsidCompare, rbobjCompare, NULL, NULL );
+
 	trace( "CREATED: store: %x; id2rbval: %x", cs->store, cs->id2rbval );
 
 	rb_iv_set( self, RBSMJS_CONTEXT_BINDINGS, rb_hash_new( ) );
 
-	// エラーレポーター登録 
 	// Register the error report handler
 	JS_SetErrorReporter( cs->cx, rb_smjs_context_errorhandle );
 
@@ -1690,7 +1735,6 @@ rb_smjs_context_flush( VALUE self ){
 	char* str_newDate = "return new Date(arguments[0] * 1000);";
 	Data_Get_Struct( self, sSMJS_Context, cs );
 
-	// グローバルオブジェクト初期化 
 	// Initialize the global JavaScript object
 	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
 	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
@@ -1698,7 +1742,7 @@ rb_smjs_context_flush( VALUE self ){
 	
 	JS_CompileFunction( cs->cx, jsGlobal, "__getStack__", 0, NULL, str_getStack, strlen( str_getStack ), "spidermonkey.c:str_getStack", 1 );
 	JS_CompileFunction( cs->cx, jsGlobal, "__newDate__", 0, NULL, str_newDate, strlen( str_newDate ), "spidermonkey.c:str_newDate", 1 );
-	// @global に初期化したグローバルオブジェクトをセット 
+
 	// Set the @global instance variable to hold the global object
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
 	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
@@ -1706,7 +1750,6 @@ rb_smjs_context_flush( VALUE self ){
 	return Qnil;
 }
 
-// バージョン文字列の取得 
 // Return the JavaScript version as a Ruby string.
 static VALUE
 rb_smjs_context_get_version( VALUE self ){
@@ -1721,7 +1764,6 @@ rb_smjs_context_shutdown( VALUE self ){
 	return Qnil;
 }
 
-// バージョン文字列の設定 
 // Set the JavaScript version from a Ruby string value.
 static VALUE
 rb_smjs_context_set_version( VALUE self, VALUE sver ){
@@ -1734,15 +1776,13 @@ rb_smjs_context_set_version( VALUE self, VALUE sver ){
 	return self;
 }
 
-// コンテキストが実行中かどうか 
-// Determines whether this context is currently executing.
+// Is the context running?
 static VALUE
 rb_smjs_context_is_running( VALUE self ){
 	return JS_IsRunning( RBSMContext_TO_JsContext( self ) ) ? Qtrue : Qfalse;
 }
 
-// ガベレージ・コレクションを実行する 
-// Invoke the JavaScript GC.
+// Run GC
 static VALUE
 rb_smjs_context_gc( VALUE self ){
 	JS_GC( RBSMContext_TO_JsContext( self ) ); 
@@ -1786,18 +1826,14 @@ rb_smjs_context_end_request( VALUE self ){
 	return Qnil;
 }
 
-// Context に対して eval等ができるように
-// We make eval (etc) available on the Context, by forwarding to the
-// underlying global object.
+// Context and ability to eval
 static VALUE
 rb_smjs_context_delegate_global( int argc, VALUE* argv, VALUE self ){
 	return rb_funcall3( rb_smjs_context_get_global( self ), SYM2ID( argv[0] ), argc - 1, argv + 1 );
 }
 
 // SpiderMonkey --------------------------------------------------------
-// SpiderMonkey に対してeval等ができるように 
-// We make eval (etc) available on the global SpiderMonkey constant, by
-// forwarding to the "default" Context.
+// SpiderMonkey can eval
 static VALUE
 rbsm_spidermonkey_delegate_default_context( int argc, VALUE* argv, VALUE self ){
 	return rb_funcall3( rb_iv_get( self, RBSMJS_DEFAULT_CONTEXT ), SYM2ID( argv[0] ), argc - 1, argv + 1 );
