@@ -973,7 +973,7 @@ rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **ob
 		return JS_TRUE;
 	}
 
-	char *keyname = JS_GetStringBytes(JSVAL_TO_STRING( id ));
+	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 
 	JS_DefineProperty(cx, obj, keyname, JSVAL_TRUE, 
 		rbsm_class_get_property, rbsm_class_set_property, JSPROP_ENUMERATE);
@@ -1000,7 +1000,7 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
 			return 1 != 1;
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			keyname = JS_GetStringBytes(JSVAL_TO_STRING( id ));
+			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 			return RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
 		}
 	}
@@ -1026,7 +1026,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			// printf( "_get_property_( %d )", keynumber );
 			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			keyname = JS_GetStringBytes(JSVAL_TO_STRING( id ));
+			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 			JS_DeleteProperty(cx, obj, keyname);
 			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
 				// printf( "_get_property_( %s )", keyname );
@@ -1087,10 +1087,10 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	
 	ID brackets = rb_intern("[]=");
 	
-	if(JSVAL_IS_STRING(id))
-		pkeyname = rb_str_new2(JS_GetStringBytes( JS_ValueToString( cx, id ) ));  
-	else
+	if(JSVAL_IS_INT(id))
 		pkeyname = INT2NUM(JSVAL_TO_INT(id));
+	else
+		pkeyname = rb_str_new2(JS_GetStringBytes( JS_ValueToString( cx, id ) ));
 
 	if(rb_respond_to(rbobj, brackets)) {
 		rid = rb_intern("[]=");
