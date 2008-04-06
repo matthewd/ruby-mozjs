@@ -979,6 +979,8 @@ rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **ob
 
 	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 
+	trace( "rbsm_resolve(cx=%x, keyname=%s)", cx, keyname );
+
 	JS_DefineProperty(cx, obj, keyname, JSVAL_TRUE, 
 		rbsm_class_get_property, rbsm_class_set_property, JSPROP_ENUMERATE);
 
@@ -1002,12 +1004,13 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 		if(JSVAL_IS_INT(id) &&
 				(rb_obj_is_kind_of(rbobj, rb_cArray) || 
 				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
-			return 1 != 1;
+			return 0;
 		} else if(rb_respond_to(rbobj, key_meth)) {
 			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 			return RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
 		}
 	}
+	return 0;
 }
 
 static JSBool
@@ -1031,7 +1034,8 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
 		} else if(rb_respond_to(rbobj, key_meth)) {
 			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
-			JS_DeleteProperty(cx, obj, keyname);
+			if( strcmp( keyname, "__noSuchMethod__" ) != 0 )
+				JS_DeleteProperty(cx, obj, keyname);
 			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
 				// printf( "_get_property_( %s )", keyname );
 				return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, rb_str_new2(keyname)), vp);
@@ -1040,7 +1044,8 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	}
 
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
-	JS_DeleteProperty(cx, obj, keyname);
+	if( strcmp( keyname, "__noSuchMethod__" ) != 0 )
+		JS_DeleteProperty(cx, obj, keyname);
 
 	// FIXME: Every rb_funcall() below should be protected.
 
@@ -1077,7 +1082,8 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		return JS_TRUE;
 #endif
 	}
-	*vp = JSVAL_VOID;
+
+	// We don't know this property, so we leave *vp untouched.
 	return JS_TRUE;
 }
 
@@ -1105,7 +1111,7 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		rb_ary_push(vals, rb_smjs_convert_prim( cx, vp[0] ));
 	}  else {
 		// call foo=
-		sprintf( keyname, "%s=", pkeyname );
+		sprintf( keyname, "%s=", JS_GetStringBytes( JS_ValueToString( cx, id ) ) );
 		rid = rb_intern( keyname );
 		vals = rb_ary_new2( 3 );
 		// thing being assigned
