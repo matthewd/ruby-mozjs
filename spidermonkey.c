@@ -1871,6 +1871,7 @@ smjs_runtime_init( ){
 }
 
 void Init_spidermonkey( ){
+	rb_require("date");
 	rb_cDate = rb_const_get( rb_cObject, rb_intern( "Date" ) );
 
 	smjs_runtime_init( );
