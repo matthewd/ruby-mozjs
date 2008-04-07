@@ -27,7 +27,7 @@
 // bad pointer, then JS_DefineFunction segfaults). It is thus quite
 // important to call JS_GC frequently... we call JS_MaybeGC before
 // evaluating a script to reduce the problem.
-#define JS_RUNTIME_MAXBYTES   0x3000000L
+#define JS_RUNTIME_MAXBYTES   0x300000L
 
 #define RBSMJS_DEFAULT_CONTEXT "@@defaultContext"
 #define RBSMJS_VALUES_CONTEXT "@context"
