@@ -242,16 +242,19 @@ rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 			jsuint length;
 			if( JS_HasArrayLength( cx, jo, &length ) ){
 				jsuint i;
+				trace("Converting JS array to Ruby (%d elements)", length);
 				ary = rb_ary_new2( length );
 				for( i = 0 ; i < length ; i++ ){
 					jsval v;
 					if( JS_GetElement( cx, jo, i, &v ) ){
-						VALUE va;
+						VALUE va, insp;
 						if( shallow ){
 							va = rb_smjs_convert_prim( cx, v );
 						}else{
 							va = rb_smjs_convertvalue( cx, v ); 
 						}
+						insp = rb_inspect(va);
+						trace(" element[%d]: %s", i, StringValuePtr(insp));
 						rb_ary_store( ary, i, va );
 					}else{
 						rb_raise( eJSConvertError, "Fail convert to array[]" );
@@ -963,10 +966,12 @@ static JSObject*
 rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	JSObject* jo;
 	sSMJS_Class* so;
+	VALUE pname;
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
-	trace("rbsm_proc_to_function(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
+	pname = rb_inspect(proc);
+	trace("rbsm_proc_to_function(cx=%x); %s; [count %d -> %d]", cx, StringValuePtr(pname), alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	return jo;
@@ -999,7 +1004,9 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 	ID array_like = rb_intern("array_like?");
 
 	int keynumber;
-	char *keyname;
+	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+
+	trace("rbsm_check_ruby_property(cx=%x, jo=%x, key=%s)", cx, obj, keyname);
 
 	if(rb_respond_to(rbobj, brackets)) {
 		if(JSVAL_IS_INT(id) &&
@@ -1007,7 +1014,6 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
 			return 0;
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
 			return RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
 		}
 	}
@@ -1046,7 +1052,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 
 	// FIXME: Every rb_funcall() below should be protected.
 
-	trace( "_get_property_(cx=%x, keyname=%s)", cx, keyname );
+	trace( "_get_property_(cx=%x, jo=%x, keyname=%s)", cx, obj, keyname );
 	rid = rb_intern( keyname );
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
@@ -1216,11 +1222,16 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 		long i;
 		long len = rb_ary_size( obj );
 		jsval tmp;
+		trace("Converting Ruby array to JS (%d elements)", len);
 		jo = JS_NewArrayObject( cx, 0, NULL );
+		JS_AddNamedRoot(cx, &jo, "ruby-array-to-js-array");
 		for( i = 0; i < len; i++ ){
+			VALUE insp = rb_inspect(rb_ary_entry(obj, i));
+			trace(" element[%d]: %s", i, StringValuePtr(insp));
 			rb_smjs_ruby_to_js( cx, rb_ary_entry( obj, i ), &tmp );
 			JS_SetElement( cx, jo, i, &tmp );
 		}
+		JS_RemoveRoot(cx, &jo);
 		return jo;
 	}
 	so = rbsm_wrap_class( cx, obj );
@@ -1683,14 +1694,11 @@ static void
 rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report ){
 	sSMJS_Context* cs;
 
-	if( JSREPORT_IS_EXCEPTION( report->flags ) ){
-		VALUE context = RBSMContext_FROM_JsContext( cx );
-		Data_Get_Struct( context, sSMJS_Context, cs );
-		strncpy( cs->last_message, message, BUFSIZ );
-		trace( "An error occurred (%s)", message );
-		JS_GetPendingException( cx, &cs->last_exception );
-		trace( "Get Pending Exception (%x)", cs->last_exception );
-	}
+	VALUE context = RBSMContext_FROM_JsContext( cx );
+	Data_Get_Struct( context, sSMJS_Context, cs );
+	strncpy( cs->last_message, message, BUFSIZ );
+	JS_GetPendingException( cx, &cs->last_exception );
+	trace( "SpiderMonkey Error: %s [exception: %x]", cs->last_message, cs->last_exception );
 }
 
 // Initialize Context
