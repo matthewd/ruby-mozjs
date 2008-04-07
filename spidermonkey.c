@@ -253,8 +253,10 @@ rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 						}else{
 							va = rb_smjs_convertvalue( cx, v ); 
 						}
+#ifdef DEBUG
 						insp = rb_inspect(va);
 						trace(" element[%d]: %s", i, StringValuePtr(insp));
+#endif
 						rb_ary_store( ary, i, va );
 					}else{
 						rb_raise( eJSConvertError, "Fail convert to array[]" );
@@ -501,6 +503,7 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	trace("rb_smjs_raise_js(cx=%x, status=%x)", cx, status);
 
 	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
+	JS_AddNamedRoot( cx, &jo, "rb_smjs_raise_js" );
 	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
 
 	rb_g = rb_iv_get( context, RBSMJS_CONTEXT_GLOBAL );
@@ -543,6 +546,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 
 	cs->last_exception = OBJECT_TO_JSVAL( jo );
 	JS_SetPendingException( cx, cs->last_exception );
+
+	JS_RemoveRoot( cx, &jo );
 
 	return JS_FALSE;
 }
@@ -970,8 +975,10 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
+#ifdef DEBUG
 	pname = rb_inspect(proc);
 	trace("rbsm_proc_to_function(cx=%x); %s; [count %d -> %d]", cx, StringValuePtr(pname), alloc_count_rb2js, ++alloc_count_rb2js);
+#endif
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	return jo;
@@ -1189,6 +1196,27 @@ rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
 
 inline static long rb_ary_size(VALUE ary) { return RARRAY(ary)->len; }
 
+static JSObject*
+rbsm_ruby_to_jsarray( JSContext* cx, VALUE obj ){
+	long i;
+	long len = rb_ary_size( obj );
+	JSObject* jo;
+	trace("Converting Ruby array to JS (%d elements)", len);
+	jo = JS_NewArrayObject( cx, 0, NULL );
+	JS_AddNamedRoot( cx, &jo, "rbsm_ruby_to_jsarray" );
+	for( i = 0; i < len; i++ ){
+		jsval tmp;
+#ifdef DEBUG
+		VALUE insp = rb_inspect(rb_ary_entry(obj, i));
+		trace(" element[%d]: %s", i, StringValuePtr(insp));
+#endif
+		rb_smjs_ruby_to_js( cx, rb_ary_entry( obj, i ), &tmp );
+		JS_SetElement( cx, jo, i, &tmp );
+	}
+	JS_RemoveRoot( cx, &jo );
+	return jo;
+}
+
 // Wrap Ruby object in JS object
 static JSObject*
 rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
@@ -1219,20 +1247,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 		return rbsm_ruby_to_jsdate( cx, msec );
 	}
 	if( rb_obj_is_kind_of( obj, rb_cArray ) ){
-		long i;
-		long len = rb_ary_size( obj );
-		jsval tmp;
-		trace("Converting Ruby array to JS (%d elements)", len);
-		jo = JS_NewArrayObject( cx, 0, NULL );
-		JS_AddNamedRoot(cx, &jo, "ruby-array-to-js-array");
-		for( i = 0; i < len; i++ ){
-			VALUE insp = rb_inspect(rb_ary_entry(obj, i));
-			trace(" element[%d]: %s", i, StringValuePtr(insp));
-			rb_smjs_ruby_to_js( cx, rb_ary_entry( obj, i ), &tmp );
-			JS_SetElement( cx, jo, i, &tmp );
-		}
-		JS_RemoveRoot(cx, &jo);
-		return jo;
+		return rbsm_ruby_to_jsarray( cx, obj );
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
@@ -1765,6 +1780,7 @@ rb_smjs_context_flush( VALUE self ){
 
 	// Initialize the global JavaScript object
 	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
+	JS_AddNamedRoot( cs->cx, &jsGlobal, "rb_smjs_context_flush" );
 	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
 		rb_raise( eJSError, "Failed to initialize global object" );
 	
@@ -1774,6 +1790,8 @@ rb_smjs_context_flush( VALUE self ){
 	// Set the @global instance variable to hold the global object
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
 	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
+
+	JS_RemoveRoot( cs->cx, &jsGlobal );
 
 	return Qnil;
 }
