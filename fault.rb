@@ -9,7 +9,7 @@ class RubyObj
     [xyzzy]
   end
   def fred(barney)
-    [barney]
+    { :barney => barney }
   end
 end
 

@@ -1251,12 +1251,14 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
+	JS_AddNamedRoot( cx, &jo, "rbsm_ruby_to_jsobject" );
 	trace("rbsm_ruby_to_jsobject(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
 	JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
 	
 	rb_hash_aset(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj, INT2FIX((int)OBJECT_TO_JSVAL(jo)));
+	JS_RemoveRoot( cx, &jo );
 	
 	return jo;
 }
@@ -1502,12 +1504,14 @@ rb_smjs_value_function( int argc, VALUE* argv, VALUE self ){
 	cname = StringValuePtr( name );
 
 	jo = rbsm_proc_to_function( sv->cs->cx, proc );
+	JS_AddNamedRoot( sv->cs->cx, &jo, "rb_smjs_value_function" );
 
 	if( rbsm_rubystring_to_jsval( sv->cs->cx, name, &jname ) ){
 		JS_SetProperty( sv->cs->cx, jo, "name", &jname );
 	}
 
 	JS_DefineProperty( sv->cs->cx, JSVAL_TO_OBJECT( sv->value ), cname, OBJECT_TO_JSVAL( jo ), NULL, NULL, JSPROP_PERMANENT | JSPROP_READONLY );
+	JS_RemoveRoot( sv->cs->cx, &jo );
 
 	return proc;
 }
