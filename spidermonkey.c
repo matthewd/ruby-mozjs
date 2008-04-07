@@ -116,6 +116,7 @@ typedef VALUE(* RBSMJS_Convert)( JSContext* cx, jsval val );
 
 static VALUE RBSMContext_FROM_JsContext( JSContext* cx );
 static JSBool rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
+static JSBool rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **objp );
 static int rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id);
@@ -982,7 +983,7 @@ rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **ob
 	trace( "rbsm_resolve(cx=%x, keyname=%s)", cx, keyname );
 
 	JS_DefineProperty(cx, obj, keyname, JSVAL_TRUE, 
-		rbsm_class_get_property, rbsm_class_set_property, JSPROP_ENUMERATE);
+		rbsm_class_get_temp_property, rbsm_class_set_property, JSPROP_ENUMERATE);
 
 	*objp = obj;
 	return JS_TRUE;
@@ -1020,7 +1021,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	VALUE method;
 	int iarity;
 	VALUE ret;
-	
+
 	ID brackets = rb_intern("[]");
 	if(rb_respond_to(rbobj, brackets)) {
 		ID key_meth = rb_intern("key?");
@@ -1034,8 +1035,6 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
 		} else if(rb_respond_to(rbobj, key_meth)) {
 			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
-			if( strcmp( keyname, "__noSuchMethod__" ) != 0 )
-				JS_DeleteProperty(cx, obj, keyname);
 			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
 				// printf( "_get_property_( %s )", keyname );
 				return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, rb_str_new2(keyname)), vp);
@@ -1044,8 +1043,6 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	}
 
 	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
-	if( strcmp( keyname, "__noSuchMethod__" ) != 0 )
-		JS_DeleteProperty(cx, obj, keyname);
 
 	// FIXME: Every rb_funcall() below should be protected.
 
@@ -1128,6 +1125,23 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	if(status != 0)
 		return rb_smjs_raise_js(cx, status);
 	return JS_TRUE;
+}
+
+static JSBool
+rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
+	sSMJS_Class* so;
+	char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+
+	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
+	if( !so ){
+		// TODO: Use the function name as the object name
+		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
+		return JS_FALSE;
+	}
+
+	JS_DeleteProperty(cx, obj, keyname);
+
+	return rbsm_get_ruby_property( cx, obj, id, vp, so->rbobj );
 }
 
 static JSBool
