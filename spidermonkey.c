@@ -975,12 +975,14 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
+	JS_AddNamedRoot( cx, &jo, "rbsm_proc_to_function" );
 #ifdef DEBUG
 	pname = rb_inspect(proc);
 	trace("rbsm_proc_to_function(cx=%x); %s; [count %d -> %d]", cx, StringValuePtr(pname), alloc_count_rb2js, ++alloc_count_rb2js);
 #endif
 	so->jsv = OBJECT_TO_JSVAL( jo );
 	JS_SetPrivate( cx, jo, (void*)so );
+	JS_RemoveRoot( cx, &jo );
 	return jo;
 }
 
