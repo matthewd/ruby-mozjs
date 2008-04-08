@@ -397,7 +397,9 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	case T_FALSE: *jval = JSVAL_FALSE; break;
 	case T_NIL:   *jval = JSVAL_NULL; break;
 	default:
-		*jval = OBJECT_TO_JSVAL( rbsm_ruby_to_jsobject( cx, rval ) );
+		JSObject* jo = rbsm_ruby_to_jsobject( cx, rval );
+		if( ! jo ) return JS_FALSE;
+		*jval = OBJECT_TO_JSVAL( jo );
 	}
 	return JS_TRUE;
 }
@@ -503,6 +505,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	trace("rb_smjs_raise_js(cx=%x, status=%x)", cx, status);
 
 	jo = JS_NewObject( cx, &JSRubyExceptionClass, NULL, NULL );
+	if( ! jo ) return JS_FALSE;
+
 	JS_AddNamedRoot( cx, &jo, "rb_smjs_raise_js" );
 	JS_DefineFunctions( cx, jo, JSRubyExceptionFunctions );
 
@@ -975,6 +979,8 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 	
 	so = rbsm_wrap_class( cx, proc );
 	jo = JS_NewObject( cx, &JSRubyFunctionClass,  NULL, NULL ); 
+	if( ! jo ) return NULL;
+
 	JS_AddNamedRoot( cx, &jo, "rbsm_proc_to_function" );
 #ifdef DEBUG
 	pname = rb_inspect(proc);
@@ -1205,6 +1211,8 @@ rbsm_ruby_to_jsarray( JSContext* cx, VALUE obj ){
 	JSObject* jo;
 	trace("Converting Ruby array to JS (%d elements)", len);
 	jo = JS_NewArrayObject( cx, 0, NULL );
+	if( ! jo ) return NULL;
+
 	JS_AddNamedRoot( cx, &jo, "rbsm_ruby_to_jsarray" );
 	for( i = 0; i < len; i++ ){
 		jsval tmp;
@@ -1253,6 +1261,8 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 	}
 	so = rbsm_wrap_class( cx, obj );
 	jo = JS_NewObject( cx, &JSRubyObjectClass, NULL, NULL ); 
+	if( ! jo ) return NULL;
+
 	JS_AddNamedRoot( cx, &jo, "rbsm_ruby_to_jsobject" );
 	trace("rbsm_ruby_to_jsobject(cx=%x, obj=%x); [count %d -> %d]", cx, jo, alloc_count_rb2js, ++alloc_count_rb2js);
 	so->jsv = OBJECT_TO_JSVAL( jo );
@@ -1786,6 +1796,8 @@ rb_smjs_context_flush( VALUE self ){
 
 	// Initialize the global JavaScript object
 	jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
+	if( ! jsGlobal )
+		rb_raise( eJSError, "Failed to create global object" );
 	JS_AddNamedRoot( cs->cx, &jsGlobal, "rb_smjs_context_flush" );
 	if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
 		rb_raise( eJSError, "Failed to initialize global object" );
