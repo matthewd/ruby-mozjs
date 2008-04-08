@@ -397,9 +397,11 @@ rb_smjs_ruby_to_js( JSContext* cx, VALUE rval, jsval* jval ){
 	case T_FALSE: *jval = JSVAL_FALSE; break;
 	case T_NIL:   *jval = JSVAL_NULL; break;
 	default:
-		JSObject* jo = rbsm_ruby_to_jsobject( cx, rval );
-		if( ! jo ) return JS_FALSE;
-		*jval = OBJECT_TO_JSVAL( jo );
+		{
+			JSObject* jo = rbsm_ruby_to_jsobject( cx, rval );
+			if( ! jo ) return JS_FALSE;
+			*jval = OBJECT_TO_JSVAL( jo );
+		}
 	}
 	return JS_TRUE;
 }
