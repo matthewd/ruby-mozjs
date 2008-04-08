@@ -18,16 +18,12 @@
 #  include <jsobj.h>
 #endif
 
+#define BRANCH_GC 0x1000
+
 // Default stack size
 #define JS_STACK_CHUNK_SIZE    16384
 
-// SETTING THIS TOO LOW RESULTS IN SEGFAULTS!
-// More specifically, having the runtime actually reach its maximum
-// memory allocation appears to cause segfaults (JS_NewObject returns a
-// bad pointer, then JS_DefineFunction segfaults). It is thus quite
-// important to call JS_GC frequently... we call JS_MaybeGC before
-// evaluating a script to reduce the problem.
-#define JS_RUNTIME_MAXBYTES   0x300000L
+#define JS_RUNTIME_MAXBYTES   0x4000000L
 
 #define RBSMJS_DEFAULT_CONTEXT "@@defaultContext"
 #define RBSMJS_VALUES_CONTEXT "@context"
@@ -37,6 +33,9 @@
 
 #define RBSM_CONVERT_SHALLOW 1
 #define RBSM_CONVERT_DEEP    0
+
+
+#define ATTEMPT_GC(cx) do { JS_MaybeGC(cx); } while (0)
 
 
 #ifdef WIN32
@@ -64,6 +63,10 @@ VALUE cJSContext;
 VALUE cJSFunction;
 VALUE cSMJS;
 JSRuntime* gSMJS_runtime;
+
+#ifdef BRANCH_GC
+unsigned long gSMJS_counter;
+#endif
 
 #ifdef DEBUG
 int alloc_count_js2rb;
@@ -115,6 +118,9 @@ typedef void(* RBSMJS_YIELD)( sSMJS_Enumdata* enm );
 typedef VALUE(* RBSMJS_Convert)( JSContext* cx, jsval val );
 
 static VALUE RBSMContext_FROM_JsContext( JSContext* cx );
+#ifdef BRANCH_GC
+static JSBool rbsm_branch_callback( JSContext* cx, JSScript* script );
+#endif
 static JSBool rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
@@ -453,6 +459,8 @@ rb_smjs_raise_ruby( JSContext* cx ){
 	VALUE context = RBSMContext_FROM_JsContext( cx );
 	VALUE self;
 
+	ATTEMPT_GC( cx );
+
 	if( !(JS_IsExceptionPending( cx ) && JS_GetPendingException( cx, &jsvalerror ) ) ){
 		sSMJS_Context* cs;
 		char tmpmsg[BUFSIZ];
@@ -499,6 +507,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	jsval stack_string;
 	VALUE rb_g;
 	VALUE rb_e = rb_gv_get( "$!" );
+
+	ATTEMPT_GC( cx );
 
 	VALUE context = RBSMContext_FROM_JsContext( cx );
 	sSMJS_Context* cs;
@@ -633,6 +643,15 @@ RBSMContext_TO_JsContext( VALUE context ){
 	return cs->cx;
 }
 
+#ifdef BRANCH_GC
+static JSBool
+rbsm_branch_callback( JSContext* cx, JSScript* script ){
+	if( ++gSMJS_counter % BRANCH_GC == 0 )
+		JS_MaybeGC( cx );
+	return JS_TRUE;
+}
+#endif
+
 static jsval 
 rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 	char* source;
@@ -664,6 +683,11 @@ rb_smjs_evalscript( sSMJS_Context* cs, JSObject* obj, int argc, VALUE* argv ){
 	//cs->last_exception = 0;
 	ok = JS_EvaluateScript( cs->cx, obj, source, strlen( source ), filename, lineno, &value );
 	if( !ok ) rb_smjs_raise_ruby( cs->cx );
+
+	JS_AddNamedRoot( cs->cx, &value, "rb_smjs_evalscript" );
+	ATTEMPT_GC( cs->cx );
+	JS_RemoveRoot( cs->cx, &value );
+
 	return value;
 }
 
@@ -1239,6 +1263,8 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 		jsval js = (jsval)FIX2INT(rb_hash_aref(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj));
 		return JSVAL_TO_OBJECT(js);
 	}
+
+	ATTEMPT_GC( cx );
 	
 	JSObject* jo;
 	sSMJS_Value* sv;
@@ -1615,6 +1641,10 @@ rb_smjs_value_call_function( int argc, VALUE* rargv, VALUE self ){
 
 	if( !ok ) rb_smjs_raise_ruby( sv->cs->cx );
 
+	JS_AddNamedRoot( sv->cs->cx, &jval, "rb_smjs_value_call_function" );
+	ATTEMPT_GC( sv->cs->cx );
+	JS_RemoveRoot( sv->cs->cx, &jval );
+
 	return rb_smjs_convert_prim( sv->cs->cx, jval );
 }
 
@@ -1755,6 +1785,10 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
 	if( !cs->cx )
 		rb_raise( eJSError, "Failed to create context" );
 
+#ifdef BRANCH_GC
+	JS_SetBranchCallback( cs->cx, rbsm_branch_callback );
+#endif
+
 	JS_SetOptions( cs->cx, JS_GetOptions( cs->cx )
 #ifdef JSOPTION_DONT_REPORT_UNCAUGHT
 		| JSOPTION_DONT_REPORT_UNCAUGHT
@@ -1810,6 +1844,8 @@ rb_smjs_context_flush( VALUE self ){
 	// Set the @global instance variable to hold the global object
 	rbGlobal = rb_smjs_value_new_jsval( self, OBJECT_TO_JSVAL( jsGlobal ) );
 	rb_iv_set( self, RBSMJS_CONTEXT_GLOBAL, rbGlobal );
+
+	JS_GC( cs->cx );
 
 	JS_RemoveRoot( cs->cx, &jsGlobal );
 
