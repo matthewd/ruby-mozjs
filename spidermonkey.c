@@ -51,6 +51,13 @@
 #endif
 
 
+static char*
+rbsm_GetValueStringBytes( JSContext* cx, jsval value ){
+	JSString* str = JS_ValueToString( cx, value );
+	if( !str ) return NULL;
+	return JS_GetStringBytes( str );
+}
+
 #define ZERO_ARITY_METHOD_IS_PROPERTY
 
 VALUE rb_cDate;
@@ -223,6 +230,7 @@ static JSObjectOps rbsm_FunctionOps;
 static VALUE 
 rb_smjs_to_s( JSContext* cx, jsval value ){
 	JSString* str = JS_ValueToString( cx, value );
+	if( !str ) rb_raise( eJSConvertError, "can't convert to string" );
 	return rb_str_new( JS_GetStringBytes( str ), JS_GetStringLength( str ) );
 }
 
@@ -895,7 +903,9 @@ rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* 
 	VALUE rargs, res;
 	int status;
 
-	keyname = JS_GetStringBytes( JS_ValueToString( cx, argv[0] ) );
+	keyname = rbsm_GetValueStringBytes( cx, argv[0] );
+	if( !keyname ) return JS_FALSE;
+
 	trace("_noSuchMethod__(cx=%x, keyname=%s)", cx, keyname );
 	so = JS_GetInstancePrivate( cx, JSVAL_TO_OBJECT( argv[-2] ), &JSRubyObjectClass, NULL );
 	if( !so ){
@@ -968,7 +978,8 @@ rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	se = JS_GetInstancePrivate( cx, obj, &JSRubyExceptionClass, NULL );
 	if( !se ){
 		// TODO: Use the object's name as the function name
-		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		if( !keyname ) keyname = "?unknown?";
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
 	}
@@ -1024,7 +1035,8 @@ rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **ob
 		return JS_TRUE;
 	}
 
-	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+	char *keyname = rbsm_GetValueStringBytes( cx, id );
+	if( !keyname ) return JS_FALSE;
 
 	trace( "rbsm_resolve(cx=%x, keyname=%s)", cx, keyname );
 
@@ -1045,7 +1057,8 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 	ID array_like = rb_intern("array_like?");
 
 	int keynumber;
-	char *keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+	char *keyname = rbsm_GetValueStringBytes( cx, id );
+	if( !keyname ) return 0;
 
 	trace("rbsm_check_ruby_property(cx=%x, jo=%x, key=%s)", cx, obj, keyname);
 
@@ -1081,7 +1094,8 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			// printf( "_get_property_( %d )", keynumber );
 			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			keyname = JS_GetStringBytes(JS_ValueToString( cx, id ));
+			keyname = rbsm_GetValueStringBytes( cx, id );
+			if( !keyname ) return JS_FALSE;
 			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
 				// printf( "_get_property_( %s )", keyname );
 				return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, rb_str_new2(keyname)), vp);
@@ -1089,7 +1103,8 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		}
 	}
 
-	keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+	keyname = rbsm_GetValueStringBytes( cx, id );
+	if( !keyname ) return JS_FALSE;
 
 	// FIXME: Every rb_funcall() below should be protected.
 
@@ -1144,7 +1159,7 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	if(JSVAL_IS_INT(id))
 		pkeyname = INT2NUM(JSVAL_TO_INT(id));
 	else
-		pkeyname = rb_str_new2(JS_GetStringBytes( JS_ValueToString( cx, id ) ));
+		pkeyname = rb_str_new2(rbsm_GetValueStringBytes( cx, id ));
 
 	if(rb_respond_to(rbobj, brackets)) {
 		rid = rb_intern("[]=");
@@ -1155,7 +1170,7 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		rb_ary_push(vals, rb_smjs_convert_prim( cx, vp[0] ));
 	}  else {
 		// call foo=
-		sprintf( keyname, "%s=", JS_GetStringBytes( JS_ValueToString( cx, id ) ) );
+		sprintf( keyname, "%s=", rbsm_GetValueStringBytes( cx, id ) );
 		rid = rb_intern( keyname );
 		vals = rb_ary_new2( 3 );
 		// thing being assigned
@@ -1177,7 +1192,8 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 static JSBool
 rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so;
-	char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+	char* keyname = rbsm_GetValueStringBytes( cx, id );
+	if( !keyname ) return JS_FALSE;
 
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
@@ -1197,7 +1213,8 @@ rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		if( !keyname ) keyname = "?unknown?";
 		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
@@ -1209,7 +1226,8 @@ static JSBool
 rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = JS_GetStringBytes( JS_ValueToString( cx, id ) );
+		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		if( !keyname ) keyname = "?unknown?";
 		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
 		return JS_FALSE;
