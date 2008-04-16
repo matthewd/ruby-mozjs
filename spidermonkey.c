@@ -51,11 +51,20 @@
 #endif
 
 
-static char*
+static const char*
 rbsm_GetValueStringBytes( JSContext* cx, jsval value ){
-	JSString* str = JS_ValueToString( cx, value );
-	if( !str ) return NULL;
-	return JS_GetStringBytes( str );
+	JSString* str;
+	const char* bytes;
+	JS_AddNamedRoot( cx, &value, "rbsm_GetValueStringBytes" );
+	str = JS_ValueToString( cx, value );
+	if( !str ){
+		JS_RemoveRoot( cx, &value );
+		return NULL;
+	}
+	trace("GetValueStringBytes(%x): %d bytes", value, JS_GetStringLength( str ));
+	bytes = JS_GetStringBytes( str );
+	JS_RemoveRoot( cx, &value );
+	return bytes;
 }
 
 #define ZERO_ARITY_METHOD_IS_PROPERTY
@@ -229,18 +238,28 @@ static JSObjectOps rbsm_FunctionOps;
 // Convert a JS object to a Ruby String
 static VALUE 
 rb_smjs_to_s( JSContext* cx, jsval value ){
-	JSString* str = JS_ValueToString( cx, value );
-	if( !str ) rb_raise( eJSConvertError, "can't convert to string" );
-	return rb_str_new( JS_GetStringBytes( str ), JS_GetStringLength( str ) );
+	VALUE out;
+	JSString* str;
+	JS_AddNamedRoot( cx, &value, "rb_smjs_to_s:value" );
+	str = JS_ValueToString( cx, value );
+	JS_RemoveRoot( cx, &value );
+	if( !str ){
+		rb_raise( eJSConvertError, "can't convert to string" );
+	}
+	out = rb_str_new( JS_GetStringBytes( str ), JS_GetStringLength( str ) );
+	return out;
 }
 
 // Convert a JS object to a Ruby Boolean
 static VALUE 
 rb_smjs_to_bool( JSContext* cx, jsval value ){
 	JSBool bp;
+	JS_AddNamedRoot( cx, &value, "rb_smjs_to_bool" );
 	if( !JS_ValueToBoolean( cx, value, &bp ) ){
+		JS_RemoveRoot( cx, &value );
 		rb_raise( eJSConvertError, "can't convert to boolean" );
 	}
+	JS_RemoveRoot( cx, &value );
 	return bp ? Qtrue : Qfalse;
 }
 
@@ -252,6 +271,7 @@ rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 	if( JSVAL_IS_OBJECT( value ) ){
 		JSObject* jo = JSVAL_TO_OBJECT( value );
 		if( JSVAL_IS_NULL( value ) ) return rb_ary_new( );
+		JS_AddNamedRoot( cx, &jo, "rb_smjs_to_a" );
 		if( JS_IsArrayObject( cx, jo ) ){
 			jsuint length;
 			if( JS_HasArrayLength( cx, jo, &length ) ){
@@ -273,12 +293,15 @@ rb_smjs_to_a( JSContext* cx, jsval value, int shallow ){
 #endif
 						rb_ary_store( ary, i, va );
 					}else{
+						JS_RemoveRoot( cx, &jo );
 						rb_raise( eJSConvertError, "Fail convert to array[]" );
 					}
 				}
+				JS_RemoveRoot( cx, &jo );
 				return ary;
 			}
 		}
+		JS_RemoveRoot( cx, &jo );
 	}
 	r = rb_smjs_convertvalue( cx, value );
 	return rb_funcall( r, rb_intern( "to_a" ), 0 );
@@ -321,9 +344,12 @@ rb_smjs_to_h( JSContext* cx, jsval value, int shallow ){
 static VALUE 
 rb_smjs_to_i( JSContext* cx, jsval value ){
 	jsint ip;
+	JS_AddNamedRoot( cx, &value, "rb_smjs_to_i" );
 	if( JS_ValueToInt32( cx, value, &ip ) ){
+		JS_RemoveRoot( cx, &value );
 		return INT2NUM( ip );
 	}else{
+		JS_RemoveRoot( cx, &value );
 		rb_raise( eJSConvertError, "Failed to convert value to integer" );
 	}
 }
@@ -331,9 +357,12 @@ rb_smjs_to_i( JSContext* cx, jsval value ){
 static VALUE 
 rb_smjs_to_f( JSContext* cx, jsval value ){
 	jsdouble d;
+	JS_AddNamedRoot( cx, &value, "rb_smjs_to_f" );
 	if( JS_ValueToNumber( cx, value, &d ) ){
+		JS_RemoveRoot( cx, &value );
 		return rb_float_new( d );
 	}else{
+		JS_RemoveRoot( cx, &value );
 		rb_raise( eJSConvertError, "Failed to convert value to float" );
 	}
 }
@@ -351,23 +380,35 @@ rb_smjs_to_num( JSContext* cx, jsval value ){
 
 static VALUE 
 rb_smjs_convertvalue( JSContext* cx, jsval value ){
-	JSObject* jo;
-	sSMJS_Class* so;
-	JSType t = JS_TypeOfValue( cx, value );
+	JSType t;
+
+	JS_AddNamedRoot( cx, &value, "rb_smjs_convertvalue" );
+	t = JS_TypeOfValue( cx, value );
+	JS_RemoveRoot( cx, &value );
+
 	switch( t ){
 	case JSTYPE_VOID: return Qnil;
 	case JSTYPE_STRING:  return rb_smjs_to_s( cx, value );
 	case JSTYPE_BOOLEAN: return rb_smjs_to_bool( cx, value );
 	case JSTYPE_OBJECT:
 		if( JSVAL_IS_NULL( value ) ) return Qnil;
-		jo = JSVAL_TO_OBJECT( value );
-		so = JS_GetInstancePrivate( cx, jo, &JSRubyObjectClass, NULL );
-		if( so ){
-			return so->rbobj;
+		{
+			JSObject* jo = JSVAL_TO_OBJECT( value );
+			sSMJS_Class* so;
+
+			JS_AddNamedRoot( cx, &jo, "rb_smjs_convertvalue" );
+			so = JS_GetInstancePrivate( cx, jo, &JSRubyObjectClass, NULL );
+			if( so ){
+				JS_RemoveRoot( cx, &jo );
+				return so->rbobj;
+			}
+			if( JS_IsArrayObject( cx, JSVAL_TO_OBJECT( value ) ) ){
+				JS_RemoveRoot( cx, &jo );
+				return rb_smjs_to_a( cx, value, RBSM_CONVERT_DEEP );
+			}
+			JS_RemoveRoot( cx, &jo );
+			return rb_smjs_to_h( cx, value, RBSM_CONVERT_DEEP );
 		}
-		if( JS_IsArrayObject( cx, JSVAL_TO_OBJECT( value ) ) )
-			return rb_smjs_to_a( cx, value, RBSM_CONVERT_DEEP );
-		return rb_smjs_to_h( cx, value, RBSM_CONVERT_DEEP );
 	case JSTYPE_NUMBER:
 		return rb_smjs_to_num( cx, value );
 	case JSTYPE_FUNCTION:
@@ -424,7 +465,10 @@ static VALUE
 rb_smjs_convert_prim( JSContext* cx, jsval value ){
 	JSObject* jo;
 	sSMJS_Class* so;
-	JSType t = JS_TypeOfValue( cx, value );
+	JSType t;
+	JS_AddNamedRoot( cx, &value, "rb_smjs_convert_prim" );
+	t = JS_TypeOfValue( cx, value );
+	JS_RemoveRoot( cx, &value );
 	VALUE context;
 	switch( t ){
 	case JSTYPE_VOID:    return Qnil;
@@ -434,12 +478,17 @@ rb_smjs_convert_prim( JSContext* cx, jsval value ){
 	case JSTYPE_OBJECT:
 		if( JSVAL_IS_NULL( value ) ) return Qnil;
 		jo = JSVAL_TO_OBJECT( value );
+		JS_AddNamedRoot( cx, &jo, "rb_smjs_convert_prim" );
 		so = JS_GetInstancePrivate( cx, jo, &JSRubyObjectClass, NULL );
 		if( so ){
+			JS_RemoveRoot( cx, &jo );
 			return so->rbobj;
 		}
-		if( JS_IsArrayObject( cx, jo ) )
+		if( JS_IsArrayObject( cx, jo ) ){
+			JS_RemoveRoot( cx, &jo );
 			return rb_smjs_to_a( cx, value, RBSM_CONVERT_SHALLOW );
+		}
+		JS_RemoveRoot( cx, &jo );
 	default:
 		context = RBSMContext_FROM_JsContext( cx );
 		return rb_smjs_value_new_jsval( context, value );
@@ -485,6 +534,8 @@ rb_smjs_raise_ruby( JSContext* cx ){
 		sprintf( cs->last_message, "Exception already passed to Ruby: %s", tmpmsg );
 	}
 
+	JS_AddNamedRoot( cx, &jsvalerror, "rb_smjs_raise_ruby" );
+
 	JS_ClearPendingException( cx );
 
 	if( JSVAL_IS_OBJECT( jsvalerror ) &&
@@ -493,6 +544,7 @@ rb_smjs_raise_ruby( JSContext* cx ){
 		// If it was originally a Ruby exception, we continue that.
 		se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
 		if( se ){
+			JS_RemoveRoot( cx, &jsvalerror );
 			int st = se->status;
 			se->status = 0;
 			rb_jump_tag( st );
@@ -503,6 +555,7 @@ rb_smjs_raise_ruby( JSContext* cx ){
 	// EvalError to Ruby.
 	self = rbsm_evalerror_new_jsval( context, jsvalerror );
 	
+	JS_RemoveRoot( cx, &jsvalerror );
 	rb_exc_raise( self );
 }
 
@@ -534,6 +587,7 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 	Data_Get_Struct( rb_g, sSMJS_Value, sv );
 
 	if( JS_CallFunctionName( cx, JSVAL_TO_OBJECT( sv->value ), "__getStack__", 0, NULL, &stack_string ) ){
+		JS_AddNamedRoot( cx, &stack_string, "rb_smjs_raise_js:stack_string" );
 		VALUE rb_stack = rb_smjs_to_s( cx, stack_string );
 
 		VALUE stack_list = rb_iv_get( rb_e, "@all_stacks" );
@@ -559,6 +613,8 @@ rb_smjs_raise_js( JSContext* cx, int status ){
 
 			rb_ary_push( stack_list, new_entry );
 		}
+
+		JS_RemoveRoot( cx, &stack_string );
 	} else {
 		trace("Failure calling __getStack__!");
 	}
@@ -718,22 +774,27 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
 	sSMJS_Enumdata* enm;
 	JSObject* jo;
 	
+	if( JSVAL_IS_PRIMITIVE( value ) ){
+		if( JSVAL_IS_STRING( value ) ){
+			return data;
+			//rb_raise ( eJSConvertError, "can't enumerate" );
+		}else{
+			return data;
+		}
+	}
+
 	enm = &enmdata;
 	enm->data = data;
 	enm->cx = cx;
 	enm->ida = NULL;
 	enm->obj = JSVAL_TO_OBJECT( value );
-	if( JSVAL_IS_PRIMITIVE( value ) ){
-		if( JSVAL_IS_STRING( value ) ){
-			return enm->data;
-			//rb_raise ( eJSConvertError, "can't enumerate" );
-		}else{
-			return enm->data;
-		}
-	}else{
-		enm->ida = JS_Enumerate( enm->cx, enm->obj );
-	}
+
+	JS_AddNamedRoot( cx, &(enm->obj), "rbsm_each" );
+
+	enm->ida = JS_Enumerate( enm->cx, enm->obj );
+
 	if( !enm->ida ){
+		JS_RemoveRoot( cx, &(enm->obj) );
 		rb_raise( eJSConvertError, "Unable to enumerate" );
 	}
 
@@ -745,15 +806,18 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
 			if( OBJ_GET_PROPERTY( enm->cx, enm->obj, enm->id, &enm->val ) ){
 				yield( enm );
 			}else{
+				JS_RemoveRoot( cx, &(enm->obj) );
 				rbsm_each_raise( enm, "Unable to get property" );
 			}
 		}else{
+			JS_RemoveRoot( cx, &(enm->obj) );
 			rbsm_each_raise( enm, "Unable to get key name" );
 		}
 	}
 
 	JS_DestroyIdArray( enm->cx, enm->ida );
 	jo = JS_GetPrototype( enm->cx, enm->obj );
+	JS_RemoveRoot( cx, &(enm->obj) );
 	if( jo ){
 		return rbsm_each( enm->cx, OBJECT_TO_JSVAL( jo ), yield, enm->data );
 	}
@@ -769,12 +833,18 @@ rbsm_value_each( VALUE self, RBSMJS_YIELD yield, void* data ){
 
 static void
 rb_smjs_value_each_yield( sSMJS_Enumdata* enm ){
+	JS_AddNamedRoot( enm->cx, &(enm->val), "rb_smjs_value_each_yield:enm->val" );
 	rb_yield( rb_smjs_convert_prim( enm->cx, enm->val ) );
+	JS_RemoveRoot( enm->cx, &(enm->val) );
 }
 
 static void
 rb_smjs_value_each_with_index_yield( sSMJS_Enumdata* enm ){
+	JS_AddNamedRoot( enm->cx, &(enm->key), "rb_smjs_value_each_with_index_yield:enm->key" );
+	JS_AddNamedRoot( enm->cx, &(enm->val), "rb_smjs_value_each_with_index_yield:enm->val" );
 	rb_yield_values( 2, rb_smjs_convertvalue( enm->cx,  enm->key ), rb_smjs_convert_prim(  enm->cx,  enm->val ) );
+	JS_RemoveRoot( enm->cx, &(enm->val) );
+	JS_RemoveRoot( enm->cx, &(enm->key) );
 }
 
 // Calls a Proc from inside protect; args is a Ruby array with the Proc
@@ -897,7 +967,7 @@ rb_smjs_ruby_proc_caller2( VALUE args ){
 
 static JSBool
 rbsm_class_no_such_method( JSContext* cx, JSObject* thisobj, uintN argc, jsval* argv, jsval* rval ){
-	char* keyname;
+	const char* keyname;
 	sSMJS_Class* so;
 
 	VALUE rargs, res;
@@ -975,14 +1045,17 @@ rbsm_class_get_object_ops( JSContext* cx, JSClass* clasp ){
 static JSBool
 rbsm_error_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Error* se;
+	JS_AddNamedRoot( cx, &id, "rbsm_error_get_property:id" );
 	se = JS_GetInstancePrivate( cx, obj, &JSRubyExceptionClass, NULL );
 	if( !se ){
 		// TODO: Use the object's name as the function name
-		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		const char* keyname = rbsm_GetValueStringBytes( cx, id );
 		if( !keyname ) keyname = "?unknown?";
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
+		JS_RemoveRoot( cx, &id );
 		return JS_FALSE;
 	}
+	JS_RemoveRoot( cx, &id );
 	return rbsm_get_ruby_property( cx, obj, id, vp, se->errinfo );
 }
 
@@ -1031,17 +1104,23 @@ rbsm_proc_to_function( JSContext* cx, VALUE proc ){
 
 static JSBool
 rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **objp ) {
+	const char *keyname;
+
 	if(!rbsm_check_ruby_property(cx, obj, id)) {
 		return JS_TRUE;
 	}
 
-	char *keyname = rbsm_GetValueStringBytes( cx, id );
+	keyname = rbsm_GetValueStringBytes( cx, id );
 	if( !keyname ) return JS_FALSE;
+
+	JS_AddNamedRoot( cx, &id, "rbsm_resolve:id" );
 
 	trace( "rbsm_resolve(cx=%x, keyname=%s)", cx, keyname );
 
 	JS_DefineProperty(cx, obj, keyname, JSVAL_TRUE, 
 		rbsm_class_get_temp_property, rbsm_class_set_property, JSPROP_ENUMERATE);
+
+	JS_RemoveRoot( cx, &id );
 
 	*objp = obj;
 	return JS_TRUE;
@@ -1049,16 +1128,22 @@ rbsm_resolve( JSContext* cx, JSObject *obj, jsval id, uintN flags, JSObject **ob
 
 static int
 rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {     
-	sSMJS_Class *so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
-	VALUE rbobj = so->rbobj;
-
 	ID brackets   = rb_intern("[]");
 	ID key_meth   = rb_intern("key?");
 	ID array_like = rb_intern("array_like?");
 
+	sSMJS_Class *so;
+	VALUE rbobj;
 	int keynumber;
-	char *keyname = rbsm_GetValueStringBytes( cx, id );
+	int result = 0;
+
+	const char *keyname = rbsm_GetValueStringBytes( cx, id );
 	if( !keyname ) return 0;
+
+	JS_AddNamedRoot( cx, &id, "rbsm_check_ruby_property:id" );
+
+	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
+	rbobj = so->rbobj;
 
 	trace("rbsm_check_ruby_property(cx=%x, jo=%x, key=%s)", cx, obj, keyname);
 
@@ -1066,23 +1151,29 @@ rbsm_check_ruby_property(JSContext* cx, JSObject* obj, jsval id) {
 		if(JSVAL_IS_INT(id) &&
 				(rb_obj_is_kind_of(rbobj, rb_cArray) || 
 				(rb_respond_to(rbobj, array_like) && RTEST(rb_funcall(rbobj, array_like, 0))))) {
-			return 0;
+			result = 0;
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			return RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
+			result = RTEST(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)));
 		}
 	}
-	return 0;
+
+	JS_RemoveRoot( cx, &id );
+	return result;
 }
 
 static JSBool
 rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE rbobj ){
-	char* keyname;
 	ID rid;
 	VALUE method;
 	int iarity;
 	VALUE ret;
 
 	ID brackets = rb_intern("[]");
+	const char* keyname = rbsm_GetValueStringBytes( cx, id );
+	if( !keyname ) return JS_FALSE;
+
+	JS_AddNamedRoot( cx, &id, "rbsm_get_ruby_property:id" );
+
 	if(rb_respond_to(rbobj, brackets)) {
 		ID key_meth = rb_intern("key?");
 		ID array_like = rb_intern("array_like?");
@@ -1094,8 +1185,6 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			// printf( "_get_property_( %d )", keynumber );
 			return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, INT2NUM(keynumber)), vp);
 		} else if(rb_respond_to(rbobj, key_meth)) {
-			keyname = rbsm_GetValueStringBytes( cx, id );
-			if( !keyname ) return JS_FALSE;
 			if(rb_funcall(rbobj, key_meth, 1, rb_str_new2(keyname)) != Qfalse) {
 				// printf( "_get_property_( %s )", keyname );
 				return rb_smjs_ruby_to_js(cx, rb_funcall(rbobj, brackets, 1, rb_str_new2(keyname)), vp);
@@ -1103,13 +1192,12 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		}
 	}
 
-	keyname = rbsm_GetValueStringBytes( cx, id );
-	if( !keyname ) return JS_FALSE;
-
 	// FIXME: Every rb_funcall() below should be protected.
 
 	trace( "_get_property_(cx=%x, jo=%x, keyname=%s)", cx, obj, keyname );
 	rid = rb_intern( keyname );
+	JS_RemoveRoot( cx, &id );
+
 	// TODO: int rb_respond_to( VALUE obj, ID id )
 	if( rb_is_const_id( rid ) && 
 			rb_respond_to(rbobj, rb_intern("const_defined?")) &&
@@ -1129,7 +1217,7 @@ rbsm_get_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 			if( status != 0 )
 				return rb_smjs_raise_js( cx, status );
 			success = rb_smjs_ruby_to_js( cx, ret, vp );
-			g_last0arity.keyname = keyname == "ID" ? "id" : keyname;
+			g_last0arity.keyname = rb_id2name( rid );
 			g_last0arity.val = *vp;
 			return success;
 		} else {
@@ -1155,6 +1243,8 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 	VALUE vals;
 	
 	ID brackets = rb_intern("[]=");
+
+	JS_AddNamedRoot( cx, &id, "rbsm_set_ruby_property" );
 	
 	if(JSVAL_IS_INT(id))
 		pkeyname = INT2NUM(JSVAL_TO_INT(id));
@@ -1177,6 +1267,8 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 		rb_ary_push( vals, rb_smjs_convert_prim( cx, vp[0] ) );
 	}
 
+	JS_RemoveRoot( cx, &id );
+
 	// method ([]= or foo=)
 	rb_ary_push(vals, rid);
 	// self
@@ -1192,18 +1284,22 @@ rbsm_set_ruby_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp, VALUE
 static JSBool
 rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so;
-	char* keyname = rbsm_GetValueStringBytes( cx, id );
+	const char* keyname = rbsm_GetValueStringBytes( cx, id );
 	if( !keyname ) return JS_FALSE;
+
+	JS_AddNamedRoot( cx, &id, "rbsm_class_get_temp_property:id" );
 
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
 		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
+		JS_RemoveRoot( cx, &id );
 		return JS_FALSE;
 	}
 
 	JS_DeleteProperty(cx, obj, keyname);
 
+	JS_RemoveRoot( cx, &id );
 	return rbsm_get_ruby_property( cx, obj, id, vp, so->rbobj );
 }
 
@@ -1211,27 +1307,35 @@ static JSBool
 rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
 	sSMJS_Class* so;
 
+	JS_AddNamedRoot( cx, &id, "rbsm_class_get_property:id" );
+
 	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		const char* keyname = rbsm_GetValueStringBytes( cx, id );
 		if( !keyname ) keyname = "?unknown?";
 		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
+		JS_RemoveRoot( cx, &id );
 		return JS_FALSE;
 	}
+	JS_RemoveRoot( cx, &id );
 	return rbsm_get_ruby_property( cx, obj, id, vp, so->rbobj );
 }
 
 static JSBool
 rbsm_class_set_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp ){
-	sSMJS_Class* so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
+	sSMJS_Class* so;
+	JS_AddNamedRoot( cx, &id, "rbsm_class_set_property:id" );
+	so = JS_GetInstancePrivate( cx, obj, &JSRubyObjectClass, NULL );
 	if( !so ){
-		char* keyname = rbsm_GetValueStringBytes( cx, id );
+		const char* keyname = rbsm_GetValueStringBytes( cx, id );
 		if( !keyname ) keyname = "?unknown?";
 		// TODO: Use the function name as the object name
 		JS_ReportErrorNumber( cx, rbsm_GetErrorMessage, NULL, RBSMMSG_INCOMPATIBLE_PROTO, "RubyObject", keyname, "Object" );
+		JS_RemoveRoot( cx, &id );
 		return JS_FALSE;
 	}
+	JS_RemoveRoot( cx, &id );
 	return rbsm_set_ruby_property( cx, obj, id, vp, so->rbobj );
 }
 
@@ -1242,7 +1346,10 @@ rbsm_ruby_to_jsdate( JSContext* cx, VALUE msec ){
 
 	rb_smjs_ruby_to_js( cx, msec, &msec_js );
 
+	JS_AddNamedRoot( cx, &msec_js, "rbsm_ruby_to_jsdate" );
 	JS_CallFunctionName( cx, jsGlobal, "__newDate__", 1, &msec_js, &dateval );
+	JS_RemoveRoot( cx, &msec_js );
+
 	return JSVAL_TO_OBJECT( dateval );
 }
 
