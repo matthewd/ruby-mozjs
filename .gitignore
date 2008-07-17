@@ -1,4 +1,11 @@
 Makefile
+js32.dll
+js32.lib
 mkmf.log
+mozjs
+pkg-config.exe
 spidermonkey.o
+spidermonkey.obj
 spidermonkey.so
+spidermonkey-*-mswin32.*
+vc60.pdb

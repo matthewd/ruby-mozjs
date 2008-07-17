@@ -466,10 +466,10 @@ rb_smjs_convert_prim( JSContext* cx, jsval value ){
   JSObject* jo;
   sSMJS_Class* so;
   JSType t;
+  VALUE context;
   JS_AddNamedRoot( cx, &value, "rb_smjs_convert_prim" );
   t = JS_TypeOfValue( cx, value );
   JS_RemoveRoot( cx, &value );
-  VALUE context;
   switch( t ){
   case JSTYPE_VOID:    return Qnil;
   case JSTYPE_STRING:  return rb_smjs_to_s( cx, value );
@@ -544,8 +544,8 @@ rb_smjs_raise_ruby( JSContext* cx ){
     // If it was originally a Ruby exception, we continue that.
     se = JS_GetInstancePrivate( cx, jo, &JSRubyExceptionClass, NULL );
     if( se ){
-      JS_RemoveRoot( cx, &jsvalerror );
       int st = se->status;
+      JS_RemoveRoot( cx, &jsvalerror );
       se->status = 0;
       rb_jump_tag( st );
     }
@@ -567,12 +567,13 @@ rb_smjs_raise_js( JSContext* cx, int status ){
   sSMJS_Value* sv;
   jsval stack_string;
   VALUE rb_g;
+  VALUE context;
   VALUE rb_e = rb_gv_get( "$!" );
+  sSMJS_Context* cs;
 
   ATTEMPT_GC( cx );
 
-  VALUE context = RBSMContext_FROM_JsContext( cx );
-  sSMJS_Context* cs;
+  context = RBSMContext_FROM_JsContext( cx );
   Data_Get_Struct( context, sSMJS_Context, cs );
 
   trace("rb_smjs_raise_js(cx=%x, status=%x)", cx, status);
@@ -587,10 +588,11 @@ rb_smjs_raise_js( JSContext* cx, int status ){
   Data_Get_Struct( rb_g, sSMJS_Value, sv );
 
   if( JS_CallFunctionName( cx, JSVAL_TO_OBJECT( sv->value ), "__getStack__", 0, NULL, &stack_string ) ){
+    VALUE rb_stack, stack_list;
     JS_AddNamedRoot( cx, &stack_string, "rb_smjs_raise_js:stack_string" );
-    VALUE rb_stack = rb_smjs_to_s( cx, stack_string );
+    rb_stack = rb_smjs_to_s( cx, stack_string );
 
-    VALUE stack_list = rb_iv_get( rb_e, "@all_stacks" );
+    stack_list = rb_iv_get( rb_e, "@all_stacks" );
     if( !RTEST( stack_list ) ){
       stack_list = rb_ary_new();
       rb_iv_set( rb_e, "@all_stacks", stack_list );
@@ -1382,6 +1384,10 @@ rbsm_ruby_to_jsarray( JSContext* cx, VALUE obj ){
 static JSObject*
 rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 
+  JSObject* jo;
+  sSMJS_Value* sv;
+  sSMJS_Class* so;
+  
   // Check if we've already converted this object into a JS Object
   if(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP) == Qnil) rb_gv_set(RBSMJS_RUBY_TO_JS_MAP, rb_hash_new());
   if(rb_funcall(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_intern("key?"), 1, obj) == Qtrue) {
@@ -1391,22 +1397,20 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
 
   ATTEMPT_GC( cx );
   
-  JSObject* jo;
-  sSMJS_Value* sv;
-  sSMJS_Class* so;
-  
   if( rb_obj_is_kind_of( obj, cJSValue ) ){
     Data_Get_Struct( obj, sSMJS_Value, sv );
     return JSVAL_TO_OBJECT( sv->value );
   }
   if( rb_obj_is_kind_of( obj, rb_cTime ) ){
+    VALUE msec;
     trace("creating Time");
-    VALUE msec = rb_funcall( obj, rb_intern( "to_i" ), 0 );
+    msec = rb_funcall( obj, rb_intern( "to_i" ), 0 );
     return rbsm_ruby_to_jsdate( cx, msec );
   }
   if( rb_obj_is_kind_of( obj, rb_cDate ) ){
+    VALUE msec;
     trace("creating Date");
-    VALUE msec = rb_funcall( rb_funcall( obj, rb_intern( "strftime" ), 1, rb_str_new2( "%s" ) ), rb_intern( "to_i" ), 0);
+    msec = rb_funcall( rb_funcall( obj, rb_intern( "strftime" ), 1, rb_str_new2( "%s" ) ), rb_intern( "to_i" ), 0);
     return rbsm_ruby_to_jsdate( cx, msec );
   }
   if( rb_obj_is_kind_of( obj, rb_cArray ) ){
