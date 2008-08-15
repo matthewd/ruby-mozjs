@@ -886,7 +886,7 @@ rb_smjs_ruby_missing_caller( VALUE args ){
 
 #ifdef ZERO_ARITY_METHOD_IS_PROPERTY
 struct{
-  char* keyname;
+  const char* keyname;
   jsval val;
 }g_last0arity;
 #endif
@@ -1390,8 +1390,8 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
   
   // Check if we've already converted this object into a JS Object
   if(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP) == Qnil) rb_gv_set(RBSMJS_RUBY_TO_JS_MAP, rb_hash_new());
-  if(rb_funcall(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_intern("key?"), 1, obj) == Qtrue) {
-    jsval js = (jsval)FIX2INT(rb_hash_aref(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj));
+  if(rb_funcall(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_intern("key?"), 1, rb_obj_id(obj)) == Qtrue) {
+    jsval js = (jsval)FIX2INT(rb_hash_aref(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_obj_id(obj)));
     return JSVAL_TO_OBJECT(js);
   }
 
@@ -1426,7 +1426,7 @@ rbsm_ruby_to_jsobject( JSContext* cx, VALUE obj ){
   JS_SetPrivate( cx, jo, (void*)so );
   JS_DefineFunctions( cx, jo, JSRubyObjectFunctions );
   
-  rb_hash_aset(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), obj, INT2FIX((int)OBJECT_TO_JSVAL(jo)));
+  rb_hash_aset(rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), rb_obj_id(obj), INT2FIX((int)OBJECT_TO_JSVAL(jo)));
   JS_RemoveRoot( cx, &jo );
   
   return jo;
@@ -1441,13 +1441,14 @@ rbsm_class_finalize( JSContext* cx, JSObject* obj ){
   if( so ){
     trace("rbsm_class_finalize(cx=%x, obj=%x); [count %d -> %d]", cx, obj, alloc_count_rb2js, --alloc_count_rb2js);
     if( so->rbobj ){
-      if( JS_GetContextPrivate( cx ) ){
-        VALUE context = RBSMContext_FROM_JsContext( cx );
+      VALUE context = RBSMContext_FROM_JsContext( cx );
+      if( context ){
         VALUE bindings = rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS );
-        if( RTEST( bindings ) ){
-          rb_hash_delete( rb_iv_get( context, RBSMJS_CONTEXT_BINDINGS ), rb_obj_id( so->rbobj ) );
-        }
-        rb_hash_delete( rb_gv_get(RBSMJS_RUBY_TO_JS_MAP), so->rbobj);
+        VALUE global_map = rb_gv_get(RBSMJS_RUBY_TO_JS_MAP);
+        if( RTEST( bindings ) )
+          rb_hash_delete( bindings, rb_obj_id( so->rbobj ) );
+        if( RTEST( global_map ) )
+          rb_hash_delete( global_map, rb_obj_id( so->rbobj ));
       }
     }
     if( so->jsv ){
