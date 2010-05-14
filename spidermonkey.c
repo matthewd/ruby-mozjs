@@ -164,7 +164,6 @@ static void* rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* da
 static JSObjectOps* rbsm_class_get_object_ops( JSContext* cx, JSClass* clasp );
 static void rb_smjs_context_errorhandle( JSContext* cx, const char* message, JSErrorReport* report );
 static VALUE rb_smjs_context_flush( VALUE self );
-static VALUE rb_smjs_value_call_with_this(int argc, VALUE* rargv, VALUE self);
 
 typedef enum RBSMErrNum{
 #define MSG_DEF( name, number, count, exception, format ) \

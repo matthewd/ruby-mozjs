@@ -17,6 +17,8 @@ def find_smjs(mozjs)
   have_library(lib)
 end
 
+$defs << " -Wall"
+
 if find_smjs('mozjs') or (CONFIG['target_os'] =~ /mswin32|mingw|bccwin32/ and (find_smjs('mozjs') or find_smjs('smjs'))) or
   %w(xulrunner-js thunderbird-js mozilla-js).any? do |package|
     PKGConfig.have_package(package)
