@@ -135,7 +135,11 @@ typedef VALUE(* RBSMJS_Convert)( JSContext* cx, jsval val );
 
 static VALUE RBSMContext_FROM_JsContext( JSContext* cx );
 #ifdef BRANCH_GC
+#if defined HAVE_JS_SETOPERATIONCALLBACK
+static JSBool rbsm_operation_callback( JSContext* cx );
+#elif defined HAVE_JS_SETBRANCHCALLBACK
 static JSBool rbsm_branch_callback( JSContext* cx, JSScript* script );
+#endif
 #endif
 static JSBool rbsm_class_get_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
 static JSBool rbsm_class_get_temp_property( JSContext* cx, JSObject* obj, jsval id, jsval* vp );
@@ -710,7 +714,13 @@ RBSMContext_TO_JsContext( VALUE context ){
 
 #ifdef BRANCH_GC
 static JSBool
+#if defined HAVE_JS_SETOPERATIONCALLBACK
+rbsm_operation_callback( JSContext* cx ){
+#elif defined HAVE_JS_SETBRANCHCALLBACK
 rbsm_branch_callback( JSContext* cx, JSScript* script ){
+#else
+#error "BRANCH_GC is defined, but we don't have JS_SetOperationCallback OR JS_SetBranchCallback"
+#endif
   if( ++gSMJS_counter % BRANCH_GC == 0 )
     JS_MaybeGC( cx );
   return JS_TRUE;
@@ -1915,7 +1925,11 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
     rb_raise( eJSError, "Failed to create context" );
 
 #ifdef BRANCH_GC
+#if defined HAVE_JS_SETOPERATIONCALLBACK
+  JS_SetOperationCallback( cs->cx, rbsm_operation_callback );
+#elif defined HAVE_JS_SETBRANCHCALLBACK
   JS_SetBranchCallback( cs->cx, rbsm_branch_callback );
+#endif
 #endif
 
   JS_SetOptions( cs->cx, JS_GetOptions( cs->cx )
