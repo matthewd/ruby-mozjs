@@ -813,8 +813,7 @@ rbsm_each( JSContext* cx, jsval value, RBSMJS_YIELD yield, void* data ){
     enm->id = enm->ida->vector[enm->i];
     if( JS_IdToValue( enm->cx, enm->id, &enm->key ) ){
       //enm->keystr = JS_GetStringBytes( JS_ValueToString( cx, enm->key ) );
-      //if( JS_GetProperty( enm->cx, enm->obj, enm->keystr, &enm->val ) ){
-      if( OBJ_GET_PROPERTY( enm->cx, enm->obj, enm->id, &enm->val ) ){
+      if( JS_GetPropertyById( enm->cx, enm->obj, enm->id, &enm->val ) ){
         yield( enm );
       }else{
         JS_RemoveRoot( cx, &(enm->obj) );
