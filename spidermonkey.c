@@ -2038,38 +2038,6 @@ rb_smjs_context_is_constructing( VALUE self ){
   return JS_IsConstructing( RBSMContext_TO_JsContext( self ) ) ? Qtrue : Qfalse; 
 }
 
-static VALUE
-rb_smjs_context_begin_request( VALUE self ){
-#ifdef JS_THREADSAFE
-  JS_BeginRequest( RBSMContext_TO_JsContext( self ) );
-#endif
-  return Qnil;
-}
-
-static VALUE
-rb_smjs_context_suspend_request( VALUE self ){
-#ifdef JS_THREADSAFE
-  JS_SuspendRequest( RBSMContext_TO_JsContext( self ) );
-#endif
-  return Qnil;
-}
-
-static VALUE
-rb_smjs_context_resume_request( VALUE self ){
-#ifdef JS_THREADSAFE
-  JS_ResumeRequest( RBSMContext_TO_JsContext( self ) );
-#endif
-  return Qnil;
-}
-
-static VALUE
-rb_smjs_context_end_request( VALUE self ){
-#ifdef JS_THREADSAFE
-  JS_EndRequest( RBSMContext_TO_JsContext( self ) );
-#endif
-  return Qnil;
-}
-
 // Context and ability to eval
 static VALUE
 rb_smjs_context_delegate_global( int argc, VALUE* argv, VALUE self ){
@@ -2139,10 +2107,6 @@ void Init_spidermonkey( ){
   rb_define_method( cJSContext, "global", rb_smjs_context_get_global, 0 );
   rb_define_method( cJSContext, "gc", rb_smjs_context_gc, 0 );
   rb_define_method( cJSContext, "constructing?", rb_smjs_context_is_constructing, 0 );
-  rb_define_method( cJSContext, "begin_request", rb_smjs_context_begin_request, 0 );
-  rb_define_method( cJSContext, "suspend_request", rb_smjs_context_suspend_request, 0 );
-  rb_define_method( cJSContext, "resume_request", rb_smjs_context_resume_request, 0 );
-  rb_define_method( cJSContext, "end_request", rb_smjs_context_end_request, 0 );
   rb_define_method( cJSContext, "scope_chain", rb_smjs_context_get_scope_chain, 0 );
 
   cJSValue = rb_define_class_under( cSMJS, "Value", rb_cObject );
