@@ -10,4 +10,6 @@ end
 have_func("JS_SetOperationCallback")
 have_func("JS_SetBranchCallback")
 
+have_func("JS_GetPropertyById")
+
 create_makefile("spidermonkey")
