@@ -1912,6 +1912,7 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
   sSMJS_Context* cs;
   int stacksize;
   int options;
+  JSObject* jsGlobal;
   Data_Get_Struct( self, sSMJS_Context, cs );
 
   strncpy( cs->last_message, "<<NO MESSAGE>>", BUFSIZ );
@@ -1962,6 +1963,14 @@ rb_smjs_context_initialize( int argc, VALUE* argv, VALUE self ){
   // Register the error report handler
   JS_SetErrorReporter( cs->cx, rb_smjs_context_errorhandle );
 
+
+  // Initialize the global JavaScript object
+  jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
+  if( ! jsGlobal )
+    rb_raise( eJSError, "Failed to create global object" );
+  JS_SetGlobalObject( cs->cx, jsGlobal );
+
+
   rb_smjs_context_flush( self );
   
   return Qnil;
@@ -1976,14 +1985,13 @@ rb_smjs_context_flush( VALUE self ){
   char* str_newDate = "return new Date(arguments[0] * 1000);";
   Data_Get_Struct( self, sSMJS_Context, cs );
 
-  // Initialize the global JavaScript object
-  jsGlobal = JS_NewObject( cs->cx, &global_class, 0, 0 );
-  if( ! jsGlobal )
-    rb_raise( eJSError, "Failed to create global object" );
+  jsGlobal = JS_GetGlobalObject( cs->cx );
   JS_AddNamedRoot( cs->cx, &jsGlobal, "rb_smjs_context_flush" );
+
+  JS_ClearScope( cs->cx, jsGlobal );
   if( !JS_InitStandardClasses( cs->cx, jsGlobal ) )
     rb_raise( eJSError, "Failed to initialize global object" );
-  
+
   JS_CompileFunction( cs->cx, jsGlobal, "__getStack__", 0, NULL, str_getStack, strlen( str_getStack ), "spidermonkey.c:str_getStack", 1 );
   JS_CompileFunction( cs->cx, jsGlobal, "__newDate__", 0, NULL, str_newDate, strlen( str_newDate ), "spidermonkey.c:str_newDate", 1 );
 
