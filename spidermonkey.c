@@ -534,7 +534,7 @@ rb_smjs_raise_ruby( JSContext* cx ){
 
     cs->last_exception = 0;
     strncpy( tmpmsg, cs->last_message, BUFSIZ );
-    sprintf( cs->last_message, "Exception already passed to Ruby: %s", tmpmsg );
+    snprintf( cs->last_message, BUFSIZ, "Exception already passed to Ruby: %s", tmpmsg );
   }
 
   JS_AddNamedRoot( cx, &jsvalerror, "rb_smjs_raise_ruby" );
